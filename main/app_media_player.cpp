@@ -7,7 +7,7 @@ using namespace esp_brookesia;
 
 AppMediaPlayer* AppMediaPlayer::_instance = nullptr;
 
-AppMediaPlayer::AppMediaPlayer() : App("Şimdi Çalıyor", nullptr, true) {
+AppMediaPlayer::AppMediaPlayer() : App("Simdi Caliyor", nullptr, true) {
     _bg_obj = nullptr;
     _label_source = nullptr;
     _label_title = nullptr;
@@ -42,14 +42,14 @@ bool AppMediaPlayer::run() {
     _label_source = lv_label_create(_bg_obj);
     lv_obj_set_style_text_font(_label_source, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(_label_source, lv_color_hex(0x888888), 0);
-    lv_label_set_text(_label_source, "BEKLENİYOR...");
+    lv_label_set_text(_label_source, "BEKLENIYOR...");
     lv_obj_align(_label_source, LV_ALIGN_TOP_MID, 0, 20);
 
     // Title Label (Center-ish)
     _label_title = lv_label_create(_bg_obj);
     lv_obj_set_style_text_font(_label_title, &lv_font_montserrat_40, 0); // Larger font
     lv_obj_set_style_text_color(_label_title, lv_color_hex(0xFFFFFF), 0);
-    lv_label_set_text(_label_title, "Müzik Çalmıyor");
+    lv_label_set_text(_label_title, "Muzik Calmiyor");
     lv_label_set_long_mode(_label_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_width(_label_title, 350);
     lv_obj_set_style_text_align(_label_title, LV_TEXT_ALIGN_CENTER, 0);

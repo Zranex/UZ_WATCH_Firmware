@@ -143,8 +143,8 @@ extern "C" void app_main(void)
         }
         bsp_display_lock(0);
         lv_disp_trig_activity(NULL);
-        bsp_display_unlock();
         AppLockscreen::show_again();
+        bsp_display_unlock();
     });
 
     /* 5. Phone nesnesi */

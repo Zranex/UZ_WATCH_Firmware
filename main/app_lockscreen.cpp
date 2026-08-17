@@ -105,21 +105,21 @@ void AppLockscreen::show(esp_brookesia::systems::phone::Phone* phone) {
     lv_obj_set_style_text_font(label_minute, &font_cinzel_bold_160, 0);
     lv_obj_set_style_text_color(label_minute, lv_color_hex(0xFFFFFF), 0);
     lv_label_set_text(label_minute, "00");
-    // Center minute directly below hour
-    lv_obj_align_to(label_minute, label_hour, LV_ALIGN_OUT_BOTTOM_MID, 0, 0);
+    // Center minute below hour, shifted slightly right (+10px)
+    lv_obj_align_to(label_minute, label_hour, LV_ALIGN_OUT_BOTTOM_MID, 10, 0);
     
     label_second = lv_label_create(lock_scr);
     lv_obj_set_style_text_font(label_second, &font_cinzel_bold_54, 0);
     lv_obj_set_style_text_color(label_second, lv_color_hex(0xDDDDDD), 0);
     lv_label_set_text(label_second, "00");
-    // Second to the right of minute, move further inward (reverted to previous position)
-    lv_obj_align_to(label_second, label_minute, LV_ALIGN_OUT_RIGHT_BOTTOM, -10, -15);
+    // Second to the right of minute, shifted slightly left (+5px)
+    lv_obj_align_to(label_second, label_minute, LV_ALIGN_OUT_RIGHT_BOTTOM, 5, -15);
     
     label_date = lv_label_create(lock_scr);
     lv_obj_set_style_text_font(label_date, &font_cinzel_bold_36, 0);
     lv_obj_set_style_text_color(label_date, lv_color_hex(0xAAAAAA), 0);
     lv_label_set_text(label_date, "01/01/2026");
-    // Date directly below minute
+    // Date perfectly centered under minute (which is centered to hour)
     lv_obj_align_to(label_date, label_minute, LV_ALIGN_OUT_BOTTOM_MID, 0, 15);
     
     timer_clock = lv_timer_create(timer_cb, 1000, nullptr);

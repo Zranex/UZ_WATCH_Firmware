@@ -1,5 +1,5 @@
 /*
- * UZ WATCH v3 — Temel Firmware + Calculator
+ * UZ WATCH v3 — Temel Firmware + Calculator + Calibration + IMU Wake
  * Touch wake aktif, uygulama manuel installApp ile yükleniyor
  */
 
@@ -16,6 +16,7 @@
 #include "bsp_board_extra.h"
 extern "C" {
 #include "rtc_lib.h"
+#include "qmi8658.h"
 }
 #include "esp_brookesia_app_calculator.hpp"
 #include "esp_brookesia_app_game_2048.hpp"
@@ -23,6 +24,8 @@ extern "C" {
 #include "app_watchface.hpp"
 #include "app_notifications.hpp"
 #include "app_lockscreen.hpp"
+#include "app_calibration.hpp"
+#include "app_media_player.hpp"
 
 extern "C" {
 #include "ble_manager.h"
@@ -41,6 +44,48 @@ using namespace esp_brookesia::systems::phone;
         .task_max_sleep_ms = 500, \
         .timer_period_ms = 5,     \
     }
+
+static bool screen_on = true;
+
+static void imu_task(void *pvParameter) {
+    while(1) {
+        // Screen timeout logic
+        bsp_display_lock(0);
+        uint32_t inactive_ms = lv_disp_get_inactive_time(NULL);
+        bsp_display_unlock();
+        
+        if (screen_on && inactive_ms > 15000) {
+            bsp_display_backlight_off();
+            screen_on = false;
+            ESP_UTILS_LOGI("Screen timeout. Display OFF.");
+        }
+
+        // Wrist wake logic
+        qmi8658_acc_t acc;
+        if (qmi8658_read_acc(&acc) == ESP_OK) {
+            float bx, by, bz;
+            AppCalibration::get_calibrated_baseline(&bx, &by, &bz);
+            
+            float dx = acc.x - bx;
+            float dy = acc.y - by;
+            float dz = acc.z - bz;
+            float dist_sq = dx*dx + dy*dy + dz*dz;
+            
+            // If the watch is held in a position close to the calibrated baseline (within ~0.3g threshold)
+            if (dist_sq < 0.3f && !screen_on) {
+                bsp_display_backlight_on();
+                screen_on = true;
+                ESP_UTILS_LOGI("Wrist tilt detected! Display ON.");
+                
+                bsp_display_lock(0);
+                lv_disp_trig_activity(NULL); // Reset LVGL inactivity timer
+                bsp_display_unlock();
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(100)); // Run every 100ms
+    }
+}
 
 extern "C" void app_main(void)
 {
@@ -91,6 +136,14 @@ extern "C" void app_main(void)
     display_manager_init();
     
     display_manager_set_wake_cb([]() {
+        // Touch wake resets inactivity and turns screen on
+        if (!screen_on) {
+            bsp_display_backlight_on();
+            screen_on = true;
+        }
+        bsp_display_lock(0);
+        lv_disp_trig_activity(NULL);
+        bsp_display_unlock();
         AppLockscreen::show_again();
     });
 
@@ -115,51 +168,24 @@ extern "C" void app_main(void)
         /* Kilit Ekrani */
         AppLockscreen::show(phone);
 
-        /* 7. Sadece Ana Ekran (Watchface) uygulamasini yukle */
-        /*
-        esp_brookesia::apps::Calculator *calculator = new (std::nothrow) esp_brookesia::apps::Calculator();
-        ESP_UTILS_CHECK_NULL_EXIT(calculator, "Create Calculator failed");
-        int app_id = phone->installApp(calculator);
-        if (app_id >= 0) {
-            ESP_UTILS_LOGI("Calculator yuklendi (id=%d)", app_id);
-        } else {
-            ESP_UTILS_LOGE("Calculator yuklenemedi!");
-        }
-
-        esp_brookesia::apps::Game2048 *game2048 = new (std::nothrow) esp_brookesia::apps::Game2048();
-        ESP_UTILS_CHECK_NULL_EXIT(game2048, "Create Game2048 failed");
-        if (phone->installApp(game2048) >= 0) {
-            ESP_UTILS_LOGI("Game2048 yuklendi");
-        } else {
-            ESP_UTILS_LOGE("Game2048 yuklenemedi!");
-        }
-
-        esp_brookesia::apps::Settings *settings = new (std::nothrow) esp_brookesia::apps::Settings();
-        ESP_UTILS_CHECK_NULL_EXIT(settings, "Create Settings failed");
-        if (phone->installApp(settings) >= 0) {
-            ESP_UTILS_LOGI("Settings yuklendi");
-        } else {
-            ESP_UTILS_LOGE("Settings yuklenemedi!");
-        }
-        */
-
+        /* 7. Uygulamalari yukle */
         esp_brookesia::apps::Watchface *watchface = new (std::nothrow) esp_brookesia::apps::Watchface();
         ESP_UTILS_CHECK_NULL_EXIT(watchface, "Create Watchface failed");
         if (phone->installApp(watchface) >= 0) {
             ESP_UTILS_LOGI("Watchface yuklendi");
-        } else {
-            ESP_UTILS_LOGE("Watchface yuklenemedi!");
+        }
+        
+        AppCalibration *calibApp = new (std::nothrow) AppCalibration();
+        ESP_UTILS_CHECK_NULL_EXIT(calibApp, "Create CalibApp failed");
+        if (phone->installApp(calibApp) >= 0) {
+            ESP_UTILS_LOGI("Calibration App yuklendi");
         }
 
-        /*
-        esp_brookesia::apps::Notifications *notifications = new (std::nothrow) esp_brookesia::apps::Notifications();
-        ESP_UTILS_CHECK_NULL_EXIT(notifications, "Create Notifications failed");
-        if (phone->installApp(notifications) >= 0) {
-            ESP_UTILS_LOGI("Notifications yuklendi");
-        } else {
-            ESP_UTILS_LOGE("Notifications yuklenemedi!");
+        AppMediaPlayer *mediaApp = new (std::nothrow) AppMediaPlayer();
+        ESP_UTILS_CHECK_NULL_EXIT(mediaApp, "Create MediaApp failed");
+        if (phone->installApp(mediaApp) >= 0) {
+            ESP_UTILS_LOGI("Media Player App yuklendi");
         }
-        */
 
         /* 8. Saat guncelleme zamanlayicisi */
         lv_timer_create([](lv_timer_t* t) {
@@ -175,6 +201,9 @@ extern "C" void app_main(void)
             );
         }, 1000, phone);
     }
+
+    // Start IMU Background Task
+    xTaskCreate(imu_task, "imu_task", 4096, NULL, 5, NULL);
 
     ESP_UTILS_LOGI("UZ WATCH v3 - Sistem Hazir!");
     ble_manager_init();

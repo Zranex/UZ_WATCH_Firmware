@@ -98,8 +98,8 @@ void AppLockscreen::show(esp_brookesia::systems::phone::Phone* phone) {
     lv_obj_set_style_text_font(label_hour, &font_cinzel_bold_160, 0);
     lv_obj_set_style_text_color(label_hour, lv_color_hex(0xFFFFFF), 0);
     lv_label_set_text(label_hour, "00");
-    // Center hour and shift it up further
-    lv_obj_align(label_hour, LV_ALIGN_CENTER, 0, -120);
+    // Center hour and shift it down by 25 pixels (from -120 to -95)
+    lv_obj_align(label_hour, LV_ALIGN_CENTER, 0, -95);
     
     label_minute = lv_label_create(lock_scr);
     lv_obj_set_style_text_font(label_minute, &font_cinzel_bold_160, 0);
@@ -112,7 +112,7 @@ void AppLockscreen::show(esp_brookesia::systems::phone::Phone* phone) {
     lv_obj_set_style_text_font(label_second, &font_cinzel_bold_54, 0);
     lv_obj_set_style_text_color(label_second, lv_color_hex(0xDDDDDD), 0);
     lv_label_set_text(label_second, "00");
-    // Second to the right of minute, move further inward
+    // Second to the right of minute, move further inward (reverted to previous position)
     lv_obj_align_to(label_second, label_minute, LV_ALIGN_OUT_RIGHT_BOTTOM, -10, -15);
     
     label_date = lv_label_create(lock_scr);

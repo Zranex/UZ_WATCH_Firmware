@@ -15,12 +15,21 @@ static const char *TAG = "ble_manager";
 
 // Custom Service UUID: 0x00FF
 static const ble_uuid16_t time_service_uuid = BLE_UUID16_INIT(0x00FF);
-// Custom Characteristic UUID: 0xFF01
+// Custom Characteristic UUID: 0xFF01 (Time)
 static const ble_uuid16_t time_chr_uuid = BLE_UUID16_INIT(0xFF01);
+// Custom Characteristic UUID: 0xFF02 (Media)
+static const ble_uuid16_t media_chr_uuid = BLE_UUID16_INIT(0xFF02);
 
 static int ble_time_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                struct ble_gatt_access_ctxt *ctxt,
                                void *arg);
+
+static int ble_media_chr_access(uint16_t conn_handle, uint16_t attr_handle,
+                               struct ble_gatt_access_ctxt *ctxt,
+                               void *arg);
+
+// C Wrapper from app_media_player.hpp
+extern void app_media_player_update_from_ble(const char* payload);
 
 static const struct ble_gatt_svc_def gatt_svcs[] = {
     {
@@ -30,6 +39,11 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
             {
                 .uuid = &time_chr_uuid.u,
                 .access_cb = ble_time_chr_access,
+                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
+            },
+            {
+                .uuid = &media_chr_uuid.u,
+                .access_cb = ble_media_chr_access,
                 .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
             },
             {
@@ -72,6 +86,26 @@ static int ble_time_chr_access(uint16_t conn_handle, uint16_t attr_handle,
             } else {
                 ESP_LOGW(TAG, "Invalid time format received: %s", buf);
             }
+        }
+        return 0;
+    }
+    return BLE_ATT_ERR_UNLIKELY;
+}
+
+static int ble_media_chr_access(uint16_t conn_handle, uint16_t attr_handle,
+                               struct ble_gatt_access_ctxt *ctxt,
+                               void *arg)
+{
+    if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
+        char buf[128]; // Larger buffer for media strings
+        int len = OS_MBUF_PKTLEN(ctxt->om);
+        if (len > 0 && len < sizeof(buf)) {
+            os_mbuf_copydata(ctxt->om, 0, len, buf);
+            buf[len] = '\0';
+            ESP_LOGI(TAG, "Received Media Sync: %s", buf);
+            
+            // Forward to C++ App
+            app_media_player_update_from_ble(buf);
         }
         return 0;
     }

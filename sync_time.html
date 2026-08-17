@@ -1,65 +1,104 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>UZ WATCH - Time Sync</title>
+    <title>UZ WATCH - Time & Media Sync</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body { font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto; padding: 20px; max-width: 500px; margin: 0 auto; text-align: center; background: #121212; color: #ffffff;}
-        button { background: #007AFF; color: white; border: none; padding: 15px 30px; font-size: 18px; border-radius: 8px; cursor: pointer; margin-top: 20px; width: 100%;}
+        button { background: #007AFF; color: white; border: none; padding: 15px 30px; font-size: 18px; border-radius: 8px; cursor: pointer; margin-top: 10px; width: 100%;}
         button:disabled { background: #555; }
+        .spotify { background: #1DB954; color: black; font-weight: bold; }
+        .youtube { background: #FF0000; color: white; font-weight: bold; }
+        .other { background: #555; color: white; }
         .status { margin-top: 20px; padding: 15px; border-radius: 8px; background: #2c2c2c; }
         h1 { color: #007AFF; }
+        #mediaControls { display: none; margin-top: 30px; padding-top: 20px; border-top: 1px solid #444; }
     </style>
 </head>
 <body>
     <h1>UZ WATCH</h1>
-    <p>Saatinizdeki zamanı telefonunuz/bilgisayarınız ile senkronize edin.</p>
+    <p>Saatinizi bağlayın ve kontrol edin.</p>
     
     <button id="connectBtn">Bağlan ve Saati Güncelle</button>
     
+    <div id="mediaControls">
+        <h3>Medya Test Kumandası</h3>
+        <p>Saatteki "Şimdi Çalıyor" arayüzünü test etmek için sahte şarkılar gönderin:</p>
+        <button class="spotify" id="btnSpotify">Spotify'dan Şarkı Gönder</button>
+        <button class="youtube" id="btnYoutube">YouTube'dan Video Gönder</button>
+        <button class="other" id="btnOther">Apple Music Gönder</button>
+    </div>
+
     <div class="status" id="statusBox">Durum: Bekliyor...</div>
 
     <script>
         const btn = document.getElementById('connectBtn');
         const statusBox = document.getElementById('statusBox');
+        const mediaControls = document.getElementById('mediaControls');
+        
+        let mediaCharacteristic = null;
 
         btn.addEventListener('click', async () => {
             try {
                 statusBox.innerText = "Durum: Cihaz aranıyor...";
                 
-                // UZ WATCH'u bul
                 const device = await navigator.bluetooth.requestDevice({
                     filters: [{ name: 'UZ WATCH' }],
-                    optionalServices: [0x00FF] // Bizim Custom Time Service
+                    optionalServices: [0x00FF]
                 });
                 
                 statusBox.innerText = "Durum: Bağlanılıyor...";
-                
                 const server = await device.gatt.connect();
+                
                 statusBox.innerText = "Durum: Servis aranıyor...";
-                
                 const service = await server.getPrimaryService(0x00FF);
-                const characteristic = await service.getCharacteristic(0xFF01);
                 
-                // Şu anki Unix zamanını al (saniye cinsinden)
+                // 1. TIME SYNC (0xFF01)
+                const timeChar = await service.getCharacteristic(0xFF01);
                 const unixTime = Math.floor(Date.now() / 1000).toString();
-                statusBox.innerText = "Gönderilen Zaman: " + new Date().toLocaleTimeString();
-                
-                // Zamanı saate gönder
                 const encoder = new TextEncoder();
-                await characteristic.writeValueWithoutResponse(encoder.encode(unixTime));
+                await timeChar.writeValueWithoutResponse(encoder.encode(unixTime));
                 
-                statusBox.innerText = "Durum: Başarılı! Saat güncellendi.\nBağlantı kesiliyor...";
+                statusBox.innerText = "Durum: Başarılı! Saat güncellendi.\nMedya kontrolleri açıldı.";
                 
-                setTimeout(() => {
-                    server.disconnect();
-                    statusBox.innerText = "Durum: İşlem tamamlandı. Cihaz ayrıldı.";
-                }, 1000);
+                // 2. MEDIA SETUP (0xFF02)
+                mediaCharacteristic = await service.getCharacteristic(0xFF02);
+                mediaControls.style.display = "block";
+                
+                // We are keeping connection alive to send media commands!
+                device.addEventListener('gattserverdisconnected', () => {
+                    statusBox.innerText = "Durum: Bağlantı koptu!";
+                    mediaControls.style.display = "none";
+                    mediaCharacteristic = null;
+                });
 
             } catch(e) {
                 statusBox.innerText = "Hata: " + e.message;
                 console.error(e);
             }
+        });
+        
+        async function sendMedia(payload) {
+            if (!mediaCharacteristic) return;
+            const encoder = new TextEncoder();
+            try {
+                await mediaCharacteristic.writeValueWithoutResponse(encoder.encode(payload));
+                statusBox.innerText = "Gönderildi: " + payload;
+            } catch (e) {
+                statusBox.innerText = "Gönderme Hatası: " + e.message;
+            }
+        }
+        
+        document.getElementById('btnSpotify').addEventListener('click', () => {
+            sendMedia("SPOTIFY|Blinding Lights|The Weeknd|PLAYING");
+        });
+        
+        document.getElementById('btnYoutube').addEventListener('click', () => {
+            sendMedia("YOUTUBE|Never Gonna Give You Up|Rick Astley|PLAYING");
+        });
+        
+        document.getElementById('btnOther').addEventListener('click', () => {
+            sendMedia("APPLE|Bohemian Rhapsody|Queen|PAUSED");
         });
     </script>
 </body>

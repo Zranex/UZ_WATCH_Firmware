@@ -4,6 +4,7 @@ set(SRCS
     "src/rtc_lib.c"
     "src/wifi_manager.c"
     "src/ble_manager.c"
+    "src/qmi8658.c"
 )
 
 set(INCLUDE_DIRS "include")

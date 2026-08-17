@@ -95,7 +95,7 @@ esp_err_t wifi_manager_pre_init(void)
     }
 
     // Set timezone (Turkey UTC+3)
-    setenv("TZ", "EET-2EEST,M3.5.0/3,M10.5.0/4", 1);
+    setenv("TZ", "TRT-3", 1);
     tzset();
 
     ESP_LOGI(TAG, "Pre-init done (NVS + TZ only, no WiFi hardware)");

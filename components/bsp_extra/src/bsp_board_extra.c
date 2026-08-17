@@ -14,6 +14,7 @@
 #include "bsp_board_extra.h"
 #include "pcf85063a.h"
 #include "wifi_manager.h"
+#include "qmi8658.h"
 
 #define CONFIG_I2C_MASTER_FREQUENCY 400000
 #define I2C_MASTER_TIMEOUT_MS 1000
@@ -88,6 +89,12 @@ esp_err_t bsp_extra_init(void)
         ESP_LOGE(TAG, "PCF85063A init failed");
         return ret;
     }   
+
+    ret = qmi8658_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "QMI8658 init failed");
+        // Not returning error to let it boot even if IMU fails
+    }
 
     ret = wifi_manager_pre_init();
     if (ret != ESP_OK) {

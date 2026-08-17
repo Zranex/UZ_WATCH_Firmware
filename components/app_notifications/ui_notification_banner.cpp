@@ -1,6 +1,7 @@
 #include "ui_notification_banner.hpp"
 #include "esp_log.h"
 #include <string.h>
+#include "app_notifications.hpp"
 
 static const char *TAG = "app_notifications";
 
@@ -54,6 +55,9 @@ void AppNotifications::init() {
 
 void AppNotifications::show(const char* sender, const char* message) {
     if (!container) return;
+
+    // Push to history
+    esp_brookesia::apps::Notifications::push_notification(sender, message);
 
     lv_label_set_text(title_label, sender);
     lv_label_set_text(message_label, message);

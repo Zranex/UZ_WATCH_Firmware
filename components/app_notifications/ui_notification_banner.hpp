@@ -1,7 +1,6 @@
 #pragma once
 
 #include "lvgl.h"
-
 class AppNotifications {
 public:
     static void init();

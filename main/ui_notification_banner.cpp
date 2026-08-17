@@ -1,7 +1,8 @@
 #include "ui_notification_banner.hpp"
 #include "esp_log.h"
 #include <string.h>
-#include "app_notifications.hpp"
+#include "app_notifications_custom.hpp"
+#include "bsp/esp-bsp.h"
 
 static const char *TAG = "app_notifications";
 
@@ -56,9 +57,6 @@ void AppNotifications::init() {
 void AppNotifications::show(const char* sender, const char* message) {
     if (!container) return;
 
-    // Push to history
-    esp_brookesia::apps::Notifications::push_notification(sender, message);
-
     lv_label_set_text(title_label, sender);
     lv_label_set_text(message_label, message);
 
@@ -66,13 +64,13 @@ void AppNotifications::show(const char* sender, const char* message) {
     lv_anim_t a;
     lv_anim_init(&a);
     lv_anim_set_var(&a, container);
-    lv_anim_set_values(&a, -110, 20); // Move from -110 to Y=20
+    lv_anim_set_values(&a, -100, 10); // From off-screen top to y=10
     lv_anim_set_time(&a, 300);
     lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
     lv_anim_set_path_cb(&a, lv_anim_path_overshoot);
     lv_anim_start(&a);
 
-    // Reset and start hide timer
+    // Restart the hide timer
     lv_timer_reset(hide_timer);
     lv_timer_resume(hide_timer);
 }
@@ -80,20 +78,25 @@ void AppNotifications::show(const char* sender, const char* message) {
 void AppNotifications::hide() {
     if (!container) return;
 
-    lv_timer_pause(hide_timer);
-
     // Slide up animation
     lv_anim_t a;
     lv_anim_init(&a);
     lv_anim_set_var(&a, container);
-    lv_anim_set_values(&a, lv_obj_get_y(container), -110);
+    lv_anim_set_values(&a, lv_obj_get_y(container), -100);
     lv_anim_set_time(&a, 300);
     lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
     lv_anim_set_path_cb(&a, lv_anim_path_ease_in);
     lv_anim_start(&a);
+
+    lv_timer_pause(hide_timer);
 }
 
 void AppNotifications::hide_timer_cb(lv_timer_t* timer) {
+    // LVGL timer callback is already within LVGL context, but we still call hide() which locks.
+    // Recursive locking is supported by bsp_display_lock if the underlying mutex allows,
+    // but typically it's safer not to lock from within LVGL timer callbacks if we're not sure.
+    // However, AppNotifications::hide() takes the lock. If this causes a deadlock, we should separate the logic.
+    // Actually, `bsp_display_lock` uses FreeRTOS recursive mutexes in esp_lcd_panel_io, but let's be safe.
     hide();
 }
 
@@ -114,7 +117,22 @@ extern "C" void app_notifications_show_from_ble(const char* payload) {
         const char* message = separator + 1;
         
         ESP_LOGI(TAG, "Parsed Notification -> Sender: %s, Message: %s", sender, message);
-        AppNotifications::show(sender, message);
+        
+        // Push notification to history (thread-safe internally)
+        AppNotificationsCustom::push_notification(sender, message);
+        
+        // Wait up to 1000ms for LVGL lock since we're in the BLE task
+        if (bsp_display_lock(1000)) {
+            // Show the drop-down banner
+            AppNotifications::show(sender, message);
+            
+            // Dynamically refresh the app's list if it's currently open on screen
+            AppNotificationsCustom::update_ui_if_open();
+            
+            bsp_display_unlock();
+        } else {
+            ESP_LOGW(TAG, "Failed to acquire display lock to show notification UI");
+        }
     } else {
         ESP_LOGW(TAG, "Invalid notification payload format: %s", payload);
     }

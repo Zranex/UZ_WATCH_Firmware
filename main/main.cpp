@@ -26,6 +26,7 @@ extern "C" {
 #include "app_lockscreen.hpp"
 #include "app_calibration.hpp"
 #include "app_media_player.hpp"
+#include "app_notifications_custom.hpp"
 
 extern "C" {
 #include "ble_manager.h"
@@ -181,6 +182,12 @@ extern "C" void app_main(void)
         ESP_UTILS_CHECK_NULL_EXIT(mediaApp, "Create MediaApp failed");
         if (phone->installApp(mediaApp) >= 0) {
             ESP_UTILS_LOGI("Media Player App yuklendi");
+        }
+
+        AppNotificationsCustom *notifApp = new (std::nothrow) AppNotificationsCustom();
+        ESP_UTILS_CHECK_NULL_EXIT(notifApp, "Create NotifApp failed");
+        if (phone->installApp(notifApp) >= 0) {
+            ESP_UTILS_LOGI("Custom Notifications App yuklendi");
         }
 
         /* Notifications UI Init */

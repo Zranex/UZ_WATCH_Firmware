@@ -14,6 +14,7 @@ void display_manager_set_timeout(uint32_t timeout_ms);
 uint32_t display_manager_get_timeout(void);
 
 void display_manager_set_wake_cb(void (*cb)(void));
+void display_manager_set_sleep_cb(void (*cb)(void));
 
 void display_manager_set_brightness(uint8_t brightness);
 uint8_t display_manager_get_brightness(void);

@@ -34,6 +34,7 @@ static const char *TAG = "DisplayMgr";
 static bool display_on = true;
 static uint32_t timeout_ms;
 static void (*wake_cb)(void) = NULL;
+static void (*sleep_cb)(void) = NULL;
 #if CONFIG_PM_ENABLE
 static esp_pm_lock_handle_t s_no_ls_lock = NULL;
 #endif
@@ -56,6 +57,10 @@ static void display_turn_off_internal(void) {
     }
 #endif
     display_on = false;
+    
+    if (sleep_cb) {
+        sleep_cb();
+    }
 }
 
 void display_manager_turn_off(void) {
@@ -104,6 +109,10 @@ void display_manager_set_wake_cb(void (*cb)(void)) {
     wake_cb = cb;
 }
 
+void display_manager_set_sleep_cb(void (*cb)(void)) {
+    sleep_cb = cb;
+}
+
 void display_manager_set_brightness(uint8_t brightness) {
     if (brightness > 100) brightness = 100;
     current_brightness = brightness;
@@ -132,6 +141,10 @@ static void display_manager_task(void *arg) {
         } else {
             // Screen is off — LVGL is still running and polling touch
             if (inactive < timeout_ms) {
+                display_manager_turn_on();
+            } else if (gpio_get_level(TOUCH_INT_PIN) == 0) {
+                // Hardware interrupt from touch controller!
+                ESP_LOGI(TAG, "Touch INT detected! Waking up display.");
                 display_manager_turn_on();
             }
         }

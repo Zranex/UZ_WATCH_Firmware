@@ -10,6 +10,7 @@ public:
 
     // C-compatible wrapper will call this
     static void update_media_data(const char* source, const char* title, const char* artist, const char* state);
+    static void force_close();
 
 protected:
     bool run() override;

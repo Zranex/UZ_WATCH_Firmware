@@ -2,6 +2,7 @@
 #include <vector>
 #include <sstream>
 #include "esp_lib_utils.h"
+#include "ble_manager.h" // Added for two-way media control
 
 using namespace esp_brookesia;
 
@@ -113,7 +114,17 @@ bool AppMediaPlayer::back() {
     return true; // Use default back behavior
 }
 
+void AppMediaPlayer::force_close() {
+    if (_instance) {
+        _instance->close();
+    }
+}
+
 bool AppMediaPlayer::close() {
+    if (_bg_obj) {
+        lv_obj_delete(_bg_obj);
+        _bg_obj = nullptr;
+    }
     return true; // Use default close behavior
 }
 
@@ -182,9 +193,8 @@ void AppMediaPlayer::update_media_data(const char* source, const char* title, co
 }
 
 void AppMediaPlayer::send_media_command(const char* cmd) {
-    // Write cmd to some output mechanism.
-    // For now, print to serial. In future, write back to BLE characteristic!
     ESP_UTILS_LOGI("Media Command: %s", cmd);
+    ble_manager_send_media_command(cmd);
 }
 
 void AppMediaPlayer::on_btn_prev_clicked(lv_event_t* e) {
@@ -213,6 +223,9 @@ void AppMediaPlayer::on_btn_next_clicked(lv_event_t* e) {
 }
 
 // C Wrapper
+extern "C" void bsp_display_lock(uint32_t timeout_ms);
+extern "C" void bsp_display_unlock(void);
+
 void app_media_player_update_from_ble(const char* payload) {
     // Payload format: SOURCE|TITLE|ARTIST|STATE
     // Example: SPOTIFY|Blinding Lights|The Weeknd|PLAYING
@@ -226,10 +239,15 @@ void app_media_player_update_from_ble(const char* payload) {
         parts.push_back(item);
     }
 
+    bsp_display_lock(0);
     if (parts.size() >= 4) {
         AppMediaPlayer::update_media_data(parts[0].c_str(), parts[1].c_str(), parts[2].c_str(), parts[3].c_str());
+    } else if (parts.size() == 3) {
+        // Source, Title, Artist, default state to PLAYING
+        AppMediaPlayer::update_media_data(parts[0].c_str(), parts[1].c_str(), parts[2].c_str(), "PLAYING");
     } else if (parts.size() >= 1) {
         // Just source, empty others
         AppMediaPlayer::update_media_data(parts[0].c_str(), "Unknown", "Unknown", "PAUSED");
     }
+    bsp_display_unlock();
 }

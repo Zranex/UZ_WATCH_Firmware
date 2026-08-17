@@ -45,21 +45,11 @@ using namespace esp_brookesia::systems::phone;
         .timer_period_ms = 5,     \
     }
 
-static bool screen_on = true;
+
 
 static void imu_task(void *pvParameter) {
     while(1) {
-        // Screen timeout logic
-        bsp_display_lock(0);
-        uint32_t inactive_ms = lv_disp_get_inactive_time(NULL);
-        bsp_display_unlock();
-        
-        if (screen_on && inactive_ms > 15000) {
-            bsp_display_backlight_off();
-            screen_on = false;
-            ESP_UTILS_LOGI("Screen timeout. Display OFF.");
-        }
-
+        // Screen timeout is now fully handled by display_manager.c
         // Wrist wake logic
         qmi8658_acc_t acc;
         if (qmi8658_read_acc(&acc) == ESP_OK) {
@@ -72,9 +62,8 @@ static void imu_task(void *pvParameter) {
             float dist_sq = dx*dx + dy*dy + dz*dz;
             
             // If the watch is held in a position close to the calibrated baseline (within ~0.3g threshold)
-            if (dist_sq < 0.3f && !screen_on) {
-                bsp_display_backlight_on();
-                screen_on = true;
+            if (dist_sq < 0.3f && !display_manager_is_on()) {
+                display_manager_turn_on();
                 ESP_UTILS_LOGI("Wrist tilt detected! Display ON.");
                 
                 bsp_display_lock(0);
@@ -136,14 +125,18 @@ extern "C" void app_main(void)
     display_manager_init();
     
     display_manager_set_wake_cb([]() {
-        // Touch wake resets inactivity and turns screen on
-        if (!screen_on) {
-            bsp_display_backlight_on();
-            screen_on = true;
-        }
+        // display_manager.c already sets bsp_display_brightness_set(100) before calling this
         bsp_display_lock(0);
         lv_disp_trig_activity(NULL);
         AppLockscreen::show_again();
+        bsp_display_unlock();
+    });
+
+    display_manager_set_sleep_cb([]() {
+        bsp_display_lock(0);
+        // Force close AppMediaPlayer if it is running when screen turns off.
+        // This ensures the user returns to the main launcher screen after unlocking.
+        AppMediaPlayer::force_close();
         bsp_display_unlock();
     });
 

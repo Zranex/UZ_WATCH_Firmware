@@ -13,6 +13,11 @@ extern "C" {
  */
 esp_err_t ble_manager_init(void);
 
+/**
+ * @brief Send a media control command to the connected BLE device (Notify)
+ */
+void ble_manager_send_media_command(const char* command);
+
 #ifdef __cplusplus
 }
 #endif

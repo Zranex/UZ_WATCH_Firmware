@@ -17,8 +17,13 @@ static const char *TAG = "ble_manager";
 static const ble_uuid16_t time_service_uuid = BLE_UUID16_INIT(0x00FF);
 // Custom Characteristic UUID: 0xFF01 (Time)
 static const ble_uuid16_t time_chr_uuid = BLE_UUID16_INIT(0xFF01);
-// Custom Characteristic UUID: 0xFF02 (Media)
+// Custom Characteristic UUID: 0xFF02 (Media Info RX)
 static const ble_uuid16_t media_chr_uuid = BLE_UUID16_INIT(0xFF02);
+// Custom Characteristic UUID: 0xFF03 (Media Command TX - Notify)
+static const ble_uuid16_t media_cmd_chr_uuid = BLE_UUID16_INIT(0xFF03);
+
+static uint16_t media_cmd_handle;
+static uint16_t ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 
 static int ble_time_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                struct ble_gatt_access_ctxt *ctxt,
@@ -45,6 +50,12 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                 .uuid = &media_chr_uuid.u,
                 .access_cb = ble_media_chr_access,
                 .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
+            },
+            {
+                .uuid = &media_cmd_chr_uuid.u,
+                .access_cb = ble_media_chr_access, // NimBLE requires this to be non-null even for NOTIFY-only
+                .flags = BLE_GATT_CHR_F_NOTIFY,
+                .val_handle = &media_cmd_handle,
             },
             {
                 0, // No more characteristics
@@ -117,13 +128,17 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
     switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
         ESP_LOGI(TAG, "BLE Connected! Status: %d", event->connect.status);
-        if (event->connect.status != 0) {
+        if (event->connect.status == 0) {
+            ble_conn_handle = event->connect.conn_handle;
+        } else {
             // Connection failed, resume advertising
             ble_hs_id_infer_auto(0, NULL); // We don't care about addr type here directly
+            ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
         }
         break;
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "BLE Disconnected. Resuming advertising.");
+        ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
         // Resume advertising
         struct ble_gap_adv_params adv_params;
         memset(&adv_params, 0, sizeof(adv_params));
@@ -229,7 +244,17 @@ esp_err_t ble_manager_init(void)
     // ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO; // No auth
     
     nimble_port_freertos_init(ble_host_task);
-
     return ESP_OK;
 }
 
+void ble_manager_send_media_command(const char* command) {
+    if (ble_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(command, strlen(command));
+        if (om) {
+            ESP_LOGI(TAG, "Sending Media Command: %s", command);
+            ble_gatts_notify_custom(ble_conn_handle, media_cmd_handle, om);
+        }
+    } else {
+        ESP_LOGW(TAG, "Cannot send command, not connected.");
+    }
+}

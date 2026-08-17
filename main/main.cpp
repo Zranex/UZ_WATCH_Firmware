@@ -17,6 +17,7 @@
 extern "C" {
 #include "rtc_lib.h"
 #include "qmi8658.h"
+#include "pedometer_task.h"
 }
 #include "esp_brookesia_app_calculator.hpp"
 #include "esp_brookesia_app_game_2048.hpp"
@@ -27,6 +28,7 @@ extern "C" {
 #include "app_calibration.hpp"
 #include "app_media_player.hpp"
 #include "app_notifications_custom.hpp"
+#include "app_activity.hpp"
 
 extern "C" {
 #include "ble_manager.h"
@@ -99,6 +101,7 @@ extern "C" void app_main(void)
 
     /* 3. Ekstra donanim (RTC vb.) — ekrandan SONRA */
     bsp_extra_init();
+    pedometer_task_init();
     rtc_start();
     
     struct tm timeinfo;
@@ -188,6 +191,12 @@ extern "C" void app_main(void)
         ESP_UTILS_CHECK_NULL_EXIT(notifApp, "Create NotifApp failed");
         if (phone->installApp(notifApp) >= 0) {
             ESP_UTILS_LOGI("Custom Notifications App yuklendi");
+        }
+
+        AppActivity *activityApp = new (std::nothrow) AppActivity();
+        ESP_UTILS_CHECK_NULL_EXIT(activityApp, "Create ActivityApp failed");
+        if (phone->installApp(activityApp) >= 0) {
+            ESP_UTILS_LOGI("Activity App yuklendi");
         }
 
         /* Notifications UI Init */

@@ -5,6 +5,7 @@ set(SRCS
     "src/wifi_manager.c"
     "src/ble_manager.c"
     "src/qmi8658.c"
+    "src/pedometer_task.c"
 )
 
 set(INCLUDE_DIRS "include")

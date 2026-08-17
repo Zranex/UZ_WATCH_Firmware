@@ -66,9 +66,10 @@ static void imu_task(void *pvParameter) {
                 display_manager_turn_on();
                 ESP_UTILS_LOGI("Wrist tilt detected! Display ON.");
                 
-                bsp_display_lock(0);
-                lv_disp_trig_activity(NULL); // Reset LVGL inactivity timer
-                bsp_display_unlock();
+                if (bsp_display_lock(1000)) {
+                    lv_disp_trig_activity(NULL); // Reset LVGL inactivity timer
+                    bsp_display_unlock();
+                }
             }
         }
         
@@ -126,18 +127,20 @@ extern "C" void app_main(void)
     
     display_manager_set_wake_cb([]() {
         // display_manager.c already sets bsp_display_brightness_set(100) before calling this
-        bsp_display_lock(0);
-        lv_disp_trig_activity(NULL);
-        AppLockscreen::show_again();
-        bsp_display_unlock();
+        if (bsp_display_lock(1000)) {
+            lv_disp_trig_activity(NULL);
+            AppLockscreen::show_again();
+            bsp_display_unlock();
+        }
     });
 
     display_manager_set_sleep_cb([]() {
-        bsp_display_lock(0);
-        // Force close AppMediaPlayer if it is running when screen turns off.
-        // This ensures the user returns to the main launcher screen after unlocking.
-        AppMediaPlayer::force_close();
-        bsp_display_unlock();
+        if (bsp_display_lock(1000)) {
+            // Force close AppMediaPlayer if it is running when screen turns off.
+            // This ensures the user returns to the main launcher screen after unlocking.
+            AppMediaPlayer::force_close();
+            bsp_display_unlock();
+        }
     });
 
     /* 5. Phone nesnesi */

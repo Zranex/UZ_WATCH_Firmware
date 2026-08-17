@@ -4,6 +4,12 @@
 #include "esp_lib_utils.h"
 #include "ble_manager.h" // Added for two-way media control
 
+extern "C" void ble_manager_send_media_command(const char* command);
+
+// C Wrapper for LVGL lock
+extern "C" bool bsp_display_lock(uint32_t timeout_ms);
+extern "C" void bsp_display_unlock(void);
+
 using namespace esp_brookesia;
 
 AppMediaPlayer* AppMediaPlayer::_instance = nullptr;
@@ -30,13 +36,16 @@ AppMediaPlayer::~AppMediaPlayer() {
 bool AppMediaPlayer::run() {
     ESP_UTILS_LOGI("AppMediaPlayer run");
     
-    // Create main background object
+    // Create a container to hold all our widgets.
+    // This ensures we can cleanly delete everything in close() and prevent duplicate children.
     _bg_obj = lv_obj_create(lv_scr_act());
     lv_obj_set_size(_bg_obj, LV_PCT(100), LV_PCT(100));
     lv_obj_center(_bg_obj);
+    lv_obj_set_style_border_width(_bg_obj, 0, 0); // No border for the main container
+    lv_obj_set_style_radius(_bg_obj, 0, 0); // No border radius
+    
     lv_obj_set_style_bg_color(_bg_obj, lv_color_hex(0x121212), 0);
-    lv_obj_set_style_border_width(_bg_obj, 5, 0); // Border for source color
-    lv_obj_set_style_border_color(_bg_obj, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_bg_opa(_bg_obj, LV_OPA_COVER, 0);
     lv_obj_clear_flag(_bg_obj, LV_OBJ_FLAG_SCROLLABLE);
 
     // Source Label (Top)
@@ -121,11 +130,12 @@ void AppMediaPlayer::force_close() {
 }
 
 bool AppMediaPlayer::close() {
-    if (_bg_obj) {
-        lv_obj_delete(_bg_obj);
-        _bg_obj = nullptr;
-    }
-    return true; // Use default close behavior
+    ESP_UTILS_LOGI("AppMediaPlayer: close");
+    
+    // Do NOT delete _bg_obj here! esp_brookesia caches the app screen.
+    // If we delete it, returning to the app shows a white/empty screen because run() is only called once!
+    
+    return true; 
 }
 
 void AppMediaPlayer::apply_theme(const char* source) {
@@ -222,9 +232,10 @@ void AppMediaPlayer::on_btn_next_clicked(lv_event_t* e) {
     if(app) app->send_media_command("NEXT");
 }
 
-// C Wrapper
-extern "C" void bsp_display_lock(uint32_t timeout_ms);
+// C Wrapper for LVGL lock
+extern "C" bool bsp_display_lock(uint32_t timeout_ms);
 extern "C" void bsp_display_unlock(void);
+
 
 void app_media_player_update_from_ble(const char* payload) {
     // Payload format: SOURCE|TITLE|ARTIST|STATE
@@ -239,15 +250,18 @@ void app_media_player_update_from_ble(const char* payload) {
         parts.push_back(item);
     }
 
-    bsp_display_lock(0);
-    if (parts.size() >= 4) {
-        AppMediaPlayer::update_media_data(parts[0].c_str(), parts[1].c_str(), parts[2].c_str(), parts[3].c_str());
-    } else if (parts.size() == 3) {
-        // Source, Title, Artist, default state to PLAYING
-        AppMediaPlayer::update_media_data(parts[0].c_str(), parts[1].c_str(), parts[2].c_str(), "PLAYING");
-    } else if (parts.size() >= 1) {
-        // Just source, empty others
-        AppMediaPlayer::update_media_data(parts[0].c_str(), "Unknown", "Unknown", "PAUSED");
+    if (bsp_display_lock(1000)) {
+        if (parts.size() >= 4) {
+            AppMediaPlayer::update_media_data(parts[0].c_str(), parts[1].c_str(), parts[2].c_str(), parts[3].c_str());
+        } else if (parts.size() == 3) {
+            // Source, Title, Artist, default state to PLAYING
+            AppMediaPlayer::update_media_data(parts[0].c_str(), parts[1].c_str(), parts[2].c_str(), "PLAYING");
+        } else if (parts.size() >= 1) {
+            // Just source, empty others
+            AppMediaPlayer::update_media_data(parts[0].c_str(), "Unknown", "Unknown", "PAUSED");
+        }
+        bsp_display_unlock();
+    } else {
+        ESP_UTILS_LOGE("Failed to acquire display lock for BLE update!");
     }
-    bsp_display_unlock();
 }

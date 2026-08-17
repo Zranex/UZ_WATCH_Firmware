@@ -1,17 +1,13 @@
 #include "app_media_player.hpp"
 #include <vector>
 #include <sstream>
+#include "esp_lib_utils.h"
 
 using namespace esp_brookesia;
 
 AppMediaPlayer* AppMediaPlayer::_instance = nullptr;
 
-AppMediaPlayer::AppMediaPlayer() : App(
-    {
-        .name = "Şimdi Çalıyor",
-        .launcher_icon = ESP_BROOKESIA_SVG_APP_LAUNCHER_SETTING, // Fallback icon for now
-    }
-) {
+AppMediaPlayer::AppMediaPlayer() : App("Şimdi Çalıyor", nullptr, true) {
     _bg_obj = nullptr;
     _label_source = nullptr;
     _label_title = nullptr;
@@ -34,7 +30,7 @@ bool AppMediaPlayer::run() {
     ESP_UTILS_LOGI("AppMediaPlayer run");
     
     // Create main background object
-    _bg_obj = lv_obj_create(getVisualArea());
+    _bg_obj = lv_obj_create(lv_scr_act());
     lv_obj_set_size(_bg_obj, LV_PCT(100), LV_PCT(100));
     lv_obj_center(_bg_obj);
     lv_obj_set_style_bg_color(_bg_obj, lv_color_hex(0x121212), 0);
@@ -89,7 +85,7 @@ bool AppMediaPlayer::run() {
     lv_obj_align_to(_btn_prev, _btn_play, LV_ALIGN_OUT_LEFT_MID, -30, 0);
     lv_obj_set_style_radius(_btn_prev, 30, 0);
     lv_obj_set_style_bg_color(_btn_prev, lv_color_hex(0x333333), 0);
-    lv_obj_add_event_cb(_btn_prev, on_btn_prev_clicked, this);
+    lv_obj_add_event_cb(_btn_prev, on_btn_prev_clicked, LV_EVENT_CLICKED, this);
     lv_obj_t* label_prev = lv_label_create(_btn_prev);
     lv_obj_set_style_text_font(label_prev, &lv_font_montserrat_28, 0);
     lv_label_set_text(label_prev, LV_SYMBOL_PREV);
@@ -101,7 +97,7 @@ bool AppMediaPlayer::run() {
     lv_obj_align_to(_btn_next, _btn_play, LV_ALIGN_OUT_RIGHT_MID, 30, 0);
     lv_obj_set_style_radius(_btn_next, 30, 0);
     lv_obj_set_style_bg_color(_btn_next, lv_color_hex(0x333333), 0);
-    lv_obj_add_event_cb(_btn_next, on_btn_next_clicked, this);
+    lv_obj_add_event_cb(_btn_next, on_btn_next_clicked, LV_EVENT_CLICKED, this);
     lv_obj_t* label_next = lv_label_create(_btn_next);
     lv_obj_set_style_text_font(label_next, &lv_font_montserrat_28, 0);
     lv_label_set_text(label_next, LV_SYMBOL_NEXT);

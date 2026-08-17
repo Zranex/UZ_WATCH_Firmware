@@ -22,7 +22,7 @@ extern "C" {
 #include "esp_brookesia_app_game_2048.hpp"
 #include "esp_brookesia_app_settings.hpp"
 #include "app_watchface.hpp"
-#include "app_notifications.hpp"
+#include "ui_notification_banner.hpp"
 #include "app_lockscreen.hpp"
 #include "app_calibration.hpp"
 #include "app_media_player.hpp"
@@ -182,6 +182,9 @@ extern "C" void app_main(void)
         if (phone->installApp(mediaApp) >= 0) {
             ESP_UTILS_LOGI("Media Player App yuklendi");
         }
+
+        /* Notifications UI Init */
+        AppNotifications::init();
 
         /* 8. Saat guncelleme zamanlayicisi */
         lv_timer_create([](lv_timer_t* t) {

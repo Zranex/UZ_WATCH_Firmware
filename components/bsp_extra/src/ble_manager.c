@@ -21,6 +21,8 @@ static const ble_uuid16_t time_chr_uuid = BLE_UUID16_INIT(0xFF01);
 static const ble_uuid16_t media_chr_uuid = BLE_UUID16_INIT(0xFF02);
 // Custom Characteristic UUID: 0xFF03 (Media Command TX - Notify)
 static const ble_uuid16_t media_cmd_chr_uuid = BLE_UUID16_INIT(0xFF03);
+// Custom Characteristic UUID: 0xFF04 (Notification Info RX)
+static const ble_uuid16_t notif_chr_uuid = BLE_UUID16_INIT(0xFF04);
 
 static uint16_t media_cmd_handle;
 static uint16_t ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
@@ -33,8 +35,15 @@ static int ble_media_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                struct ble_gatt_access_ctxt *ctxt,
                                void *arg);
 
+static int ble_notif_chr_access(uint16_t conn_handle, uint16_t attr_handle,
+                               struct ble_gatt_access_ctxt *ctxt,
+                               void *arg);
+
 // C Wrapper from app_media_player.hpp
 extern void app_media_player_update_from_ble(const char* payload);
+
+// C Wrapper from app_notifications.hpp
+extern void app_notifications_show_from_ble(const char* payload);
 
 static const struct ble_gatt_svc_def gatt_svcs[] = {
     {
@@ -56,6 +65,11 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                 .access_cb = ble_media_chr_access, // NimBLE requires this to be non-null even for NOTIFY-only
                 .flags = BLE_GATT_CHR_F_NOTIFY,
                 .val_handle = &media_cmd_handle,
+            },
+            {
+                .uuid = &notif_chr_uuid.u,
+                .access_cb = ble_notif_chr_access,
+                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
             },
             {
                 0, // No more characteristics
@@ -117,6 +131,26 @@ static int ble_media_chr_access(uint16_t conn_handle, uint16_t attr_handle,
             
             // Forward to C++ App
             app_media_player_update_from_ble(buf);
+        }
+        return 0;
+    }
+    return BLE_ATT_ERR_UNLIKELY;
+}
+
+static int ble_notif_chr_access(uint16_t conn_handle, uint16_t attr_handle,
+                               struct ble_gatt_access_ctxt *ctxt,
+                               void *arg)
+{
+    if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
+        char buf[256]; // Larger buffer for notification text
+        int len = OS_MBUF_PKTLEN(ctxt->om);
+        if (len > 0 && len < sizeof(buf)) {
+            os_mbuf_copydata(ctxt->om, 0, len, buf);
+            buf[len] = '\0';
+            ESP_LOGI(TAG, "Received Notification: %s", buf);
+            
+            // Forward to C++ App
+            app_notifications_show_from_ble(buf);
         }
         return 0;
     }

@@ -43,16 +43,10 @@ static void display_turn_off_internal(void) {
         return;
     }
     ESP_LOGI(TAG, "Turning display off");
-    if (lvgl_port_lock(200)) {
-        lv_indev_t* indev = bsp_display_get_input_dev();
-        if (indev) {
-            lv_indev_enable(indev, false);
-        }
-        lvgl_port_stop();
-        lvgl_port_unlock();
-    } else {
-        lvgl_port_stop();
-    }
+    
+    // We do NOT stop LVGL or disable indev.
+    // This allows LVGL to natively detect the next touch to wake up!
+    
     // Turn off brightness (AMOLED — no backlight, brightness controls panel)
     bsp_display_brightness_set(0);
     // Allow automatic light sleep while the screen is off
@@ -71,21 +65,13 @@ void display_manager_turn_off(void) {
 void display_manager_turn_on(void) {
     if (!display_on) {
         ESP_LOGI(TAG, "Turning display on");
-        // Resume LVGL and restore brightness
-        lvgl_port_resume();
+        // Restore brightness
         bsp_display_brightness_set(current_brightness);
-        if (lvgl_port_lock(0)) {
-            lv_indev_t* indev = bsp_display_get_input_dev();
-            if (indev) {
-                lv_indev_enable(indev, true);
-            }
-            
-            if (wake_cb) {
-                wake_cb();
-            }
-            
-            lvgl_port_unlock();
+        
+        if (wake_cb) {
+            wake_cb(); // This will trigger AppLockscreen::show_again()
         }
+        
         display_on = true;
     }
     // Prevent light sleep while actively displaying UI
@@ -130,34 +116,23 @@ uint8_t display_manager_get_brightness(void) {
     return current_brightness;
 }
 
-/*
- * Wake detection: the FT5x06 touch controller drives TOUCH_INT_PIN LOW
- * whenever a finger touches the panel, even when LVGL polling is disabled.
- * We only READ the pin — we must NOT reconfigure it with gpio_config().
- */
-static bool touch_detected(void)
-{
-    return gpio_get_level(TOUCH_INT_PIN) == 0;
-}
-
 static void display_manager_task(void *arg) {
-    ESP_LOGI(TAG, "Display manager task started (touch wake on GPIO %d)", TOUCH_INT_PIN);
+    ESP_LOGI(TAG, "Display manager task started (native LVGL wake)");
     while (1) {
+        uint32_t inactive = 0;
+        if (lvgl_port_lock(0)) {
+            inactive = lv_disp_get_inactive_time(NULL);
+            lvgl_port_unlock();
+        }
+        
         if (display_on) {
-            uint32_t inactive = 0;
-            if (lvgl_port_lock(0)) {
-                inactive = lv_disp_get_inactive_time(NULL);
-                lvgl_port_unlock();
-            }
             if (inactive >= timeout_ms) {
                 display_turn_off_internal();
             }
         } else {
-            // Screen is off — check touch interrupt pin for wake
-            if (touch_detected()) {
+            // Screen is off — LVGL is still running and polling touch
+            if (inactive < timeout_ms) {
                 display_manager_turn_on();
-                // Debounce: wait for finger release
-                vTaskDelay(pdMS_TO_TICKS(300));
             }
         }
         vTaskDelay(pdMS_TO_TICKS(50));

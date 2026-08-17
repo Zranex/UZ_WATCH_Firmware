@@ -173,6 +173,12 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "BLE Disconnected. Resuming advertising.");
         ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+        
+        // --- ADDED FOR BLE LOST MODE ---
+        extern void app_notifications_show_system_alert(const char* msg);
+        app_notifications_show_system_alert("Telefon Baglantisi Koptu!");
+        // -------------------------------
+
         // Resume advertising
         struct ble_gap_adv_params adv_params;
         memset(&adv_params, 0, sizeof(adv_params));

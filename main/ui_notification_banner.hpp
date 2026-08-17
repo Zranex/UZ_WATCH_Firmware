@@ -23,6 +23,7 @@ extern "C" {
 #endif
 
 void app_notifications_show_from_ble(const char* payload);
+void app_notifications_show_system_alert(const char* msg);
 
 #ifdef __cplusplus
 }

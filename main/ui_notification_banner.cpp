@@ -133,7 +133,17 @@ extern "C" void app_notifications_show_from_ble(const char* payload) {
         } else {
             ESP_LOGW(TAG, "Failed to acquire display lock to show notification UI");
         }
-    } else {
+} else {
         ESP_LOGW(TAG, "Invalid notification payload format: %s", payload);
+    }
+}
+
+extern "C" void app_notifications_show_system_alert(const char* msg) {
+    ESP_LOGI(TAG, "System Alert: %s", msg);
+    if (bsp_display_lock(1000)) {
+        AppNotifications::show("SISTEM", msg);
+        bsp_display_unlock();
+    } else {
+        ESP_LOGW(TAG, "Failed to acquire display lock to show system alert");
     }
 }

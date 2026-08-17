@@ -29,6 +29,7 @@ extern "C" {
 #include "app_media_player.hpp"
 #include "app_notifications_custom.hpp"
 #include "app_activity.hpp"
+#include "app_smart_home.hpp"
 
 extern "C" {
 #include "ble_manager.h"
@@ -197,6 +198,12 @@ extern "C" void app_main(void)
         ESP_UTILS_CHECK_NULL_EXIT(activityApp, "Create ActivityApp failed");
         if (phone->installApp(activityApp) >= 0) {
             ESP_UTILS_LOGI("Activity App yuklendi");
+        }
+        
+        AppSmartHome *smartHomeApp = new (std::nothrow) AppSmartHome();
+        ESP_UTILS_CHECK_NULL_EXIT(smartHomeApp, "Create SmartHomeApp failed");
+        if (phone->installApp(smartHomeApp) >= 0) {
+            ESP_UTILS_LOGI("Smart Home App yuklendi");
         }
 
         /* Notifications UI Init */

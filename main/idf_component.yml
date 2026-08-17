@@ -1,0 +1,12 @@
+## IDF Component Manager Manifest File
+dependencies:
+  idf: ">=5.1.0"
+  espressif/esp_lvgl_port:
+    version: "^2"
+  lvgl/lvgl: "9.*"
+  brookesia_core:
+    override_path: "../components/brookesia_core"
+  waveshare/qmi8658:
+    version: "*"
+  brookesia_app_calculator:
+    override_path: "../components/brookesia_app_calculator"

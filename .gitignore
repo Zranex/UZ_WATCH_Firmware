@@ -1,0 +1,9 @@
+.pio/
+.vscode/
+build/
+*.bin
+*.elf
+*.map
+managed_components/
+sdkconfig
+*.log

@@ -1,0 +1,33 @@
+idf_component_register(
+    SRCS "main.cpp" "user_wallpaper.c" "app_lockscreen.cpp" "lockscreen_img.c" "font_cinzel_bold_160.c" "font_cinzel_bold_54.c" "font_cinzel_bold_36.c"
+    INCLUDE_DIRS "."
+    REQUIRES display_manager bsp_extra brookesia_app_calculator brookesia_app_game_2048 brookesia_app_settings app_watchface app_notifications
+    )
+
+target_compile_options(${COMPONENT_LIB} PUBLIC -Wno-missing-field-initializers)
+
+if(CONFIG_ESP_BROOKESIA_MEMORY_USE_CUSTOM)
+    idf_build_get_property(build_components BUILD_COMPONENTS)
+    foreach(COMPONENT ${build_components})
+        if(COMPONENT MATCHES "brookesia_core" OR COMPONENT MATCHES "espressif__brookesia_core")
+            set(TARGET_COMPONENT ${COMPONENT})
+            break()
+        endif()
+    endforeach()
+
+    if(TARGET_COMPONENT STREQUAL "")
+        message(FATAL_ERROR "Component 'brookesia_core' not found.")
+    else()
+        idf_component_get_property(ESP_BROOKESIA_LIB ${TARGET_COMPONENT} COMPONENT_LIB)
+    endif()
+
+    target_compile_options(
+        ${ESP_BROOKESIA_LIB}
+        PUBLIC
+            "-DESP_BROOKESIA_MEMORY_CUSTOM_MALLOC(x)=heap_caps_aligned_alloc(1, x, MALLOC_CAP_SPIRAM)"  "-DESP_BROOKESIA_MEMORY_CUSTOM_FREE=free"
+    )
+endif()
+
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions")
+
+spiffs_create_partition_image(storage ../spiffs FLASH_IN_PROJECT)

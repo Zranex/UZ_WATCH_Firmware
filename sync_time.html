@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>UZ WATCH - Time Sync</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto; padding: 20px; max-width: 500px; margin: 0 auto; text-align: center; background: #121212; color: #ffffff;}
+        button { background: #007AFF; color: white; border: none; padding: 15px 30px; font-size: 18px; border-radius: 8px; cursor: pointer; margin-top: 20px; width: 100%;}
+        button:disabled { background: #555; }
+        .status { margin-top: 20px; padding: 15px; border-radius: 8px; background: #2c2c2c; }
+        h1 { color: #007AFF; }
+    </style>
+</head>
+<body>
+    <h1>UZ WATCH</h1>
+    <p>Saatinizdeki zamanı telefonunuz/bilgisayarınız ile senkronize edin.</p>
+    
+    <button id="connectBtn">Bağlan ve Saati Güncelle</button>
+    
+    <div class="status" id="statusBox">Durum: Bekliyor...</div>
+
+    <script>
+        const btn = document.getElementById('connectBtn');
+        const statusBox = document.getElementById('statusBox');
+
+        btn.addEventListener('click', async () => {
+            try {
+                statusBox.innerText = "Durum: Cihaz aranıyor...";
+                
+                // UZ WATCH'u bul
+                const device = await navigator.bluetooth.requestDevice({
+                    filters: [{ name: 'UZ WATCH' }],
+                    optionalServices: [0x00FF] // Bizim Custom Time Service
+                });
+                
+                statusBox.innerText = "Durum: Bağlanılıyor...";
+                
+                const server = await device.gatt.connect();
+                statusBox.innerText = "Durum: Servis aranıyor...";
+                
+                const service = await server.getPrimaryService(0x00FF);
+                const characteristic = await service.getCharacteristic(0xFF01);
+                
+                // Şu anki Unix zamanını al (saniye cinsinden)
+                const unixTime = Math.floor(Date.now() / 1000).toString();
+                statusBox.innerText = "Gönderilen Zaman: " + new Date().toLocaleTimeString();
+                
+                // Zamanı saate gönder
+                const encoder = new TextEncoder();
+                await characteristic.writeValueWithoutResponse(encoder.encode(unixTime));
+                
+                statusBox.innerText = "Durum: Başarılı! Saat güncellendi.\nBağlantı kesiliyor...";
+                
+                setTimeout(() => {
+                    server.disconnect();
+                    statusBox.innerText = "Durum: İşlem tamamlandı. Cihaz ayrıldı.";
+                }, 1000);
+
+            } catch(e) {
+                statusBox.innerText = "Hata: " + e.message;
+                console.error(e);
+            }
+        });
+    </script>
+</body>
+</html>

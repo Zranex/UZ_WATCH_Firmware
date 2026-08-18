@@ -20,10 +20,8 @@ void AppSmartHome::send_command(const char* cmd) {
 
 void AppSmartHome::on_btn_clicked(lv_event_t* e) {
     AppSmartHome* app = (AppSmartHome*)lv_event_get_user_data(e);
-    const char* cmd = (const char*)lv_event_get_param(e); // We'll pass the command string as user_data or deduce it
-    // Wait, lv_event_get_param is for custom events. Let's use obj->user_data instead.
     
-    lv_obj_t* btn = lv_event_get_target(e);
+    lv_obj_t* btn = (lv_obj_t*)lv_event_get_target(e);
     const char* cmd_str = (const char*)btn->user_data;
     
     if (app && cmd_str) {
@@ -36,6 +34,9 @@ void AppSmartHome::on_btn_clicked(lv_event_t* e) {
 
 bool AppSmartHome::run() {
     ESP_UTILS_LOGI("AppSmartHome run");
+    if (_bg_obj != nullptr) {
+        return true;
+    }
     
     _bg_obj = lv_obj_create(lv_scr_act());
     lv_obj_set_size(_bg_obj, LV_PCT(100), LV_PCT(100));
@@ -94,7 +95,8 @@ bool AppSmartHome::run() {
     create_btn(0, 0, LV_SYMBOL_WIFI, "Tavan", "SMART_HOME|LIGHT_1_TOGGLE", lv_color_hex(0xFFB300));
     
     // Button 2: Masa Lambası
-    create_btn(1, 0, LV_SYMBOL_BULB, "Masa", "SMART_HOME|LIGHT_2_TOGGLE", lv_color_hex(0x03A9F4));
+    create_btn(1, 0, LV_SYMBOL_BELL, "Masa", "SMART_HOME|LIGHT_2_TOGGLE", lv_color_hex(0x03A9F4));
+
     
     // Button 3: PC Uyut
     create_btn(0, 1, LV_SYMBOL_POWER, "PC Uyut", "SMART_HOME|PC_SLEEP", lv_color_hex(0xE53935));
@@ -106,10 +108,14 @@ bool AppSmartHome::run() {
 }
 
 bool AppSmartHome::back() {
-    return true;
+    return close();
 }
 
 bool AppSmartHome::close() {
     ESP_UTILS_LOGI("AppSmartHome close");
+    if (_bg_obj) {
+        lv_obj_delete(_bg_obj);
+        _bg_obj = nullptr;
+    }
     return true;
 }

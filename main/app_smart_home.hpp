@@ -1,6 +1,5 @@
 #pragma once
 
-#include "app.hpp"
 #include "esp_brookesia.hpp"
 #include "lvgl.h"
 

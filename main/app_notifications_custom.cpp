@@ -2,6 +2,10 @@
 #include "esp_lib_utils.h"
 #include "bsp/esp-bsp.h"
 
+extern "C" {
+#include "ble_manager.h"
+}
+
 // Define static history
 std::vector<NotificationData> AppNotificationsCustom::history;
 std::mutex AppNotificationsCustom::history_mutex;
@@ -18,12 +22,13 @@ AppNotificationsCustom::~AppNotificationsCustom() {
     if (_instance == this) _instance = nullptr;
 }
 
-void AppNotificationsCustom::push_notification(const std::string& sender, const std::string& message) {
+void AppNotificationsCustom::push_notification(const std::string& sender, const std::string& message, const std::string& notif_id) {
     std::lock_guard<std::mutex> lock(history_mutex);
     
     NotificationData data;
     data.sender = sender;
     data.message = message;
+    data.notif_id = notif_id;
     data.timestamp = 0; // Or use an actual RTC timestamp if preferred
 
     // Add to the front of the vector
@@ -143,8 +148,114 @@ void AppNotificationsCustom::refresh_list_ui() {
             
             lv_obj_align(sender_lbl, LV_ALIGN_TOP_LEFT, 0, 0);
             lv_obj_align(msg_lbl, LV_ALIGN_TOP_LEFT, 0, 20);
+
+            if (!item.notif_id.empty()) {
+                lv_obj_t* reply_btn = lv_btn_create(item_card);
+                lv_obj_set_size(reply_btn, 100, 35);
+                lv_obj_align(reply_btn, LV_ALIGN_TOP_RIGHT, 0, 0);
+                lv_obj_set_style_bg_color(reply_btn, lv_color_hex(0x0055FF), 0);
+                
+                char* id_copy = strdup(item.notif_id.c_str());
+                lv_obj_add_event_cb(reply_btn, on_reply_clicked, LV_EVENT_CLICKED, id_copy);
+                lv_obj_add_event_cb(reply_btn, on_user_data_deleted, LV_EVENT_DELETE, id_copy);
+
+                lv_obj_t* btn_lbl = lv_label_create(reply_btn);
+                lv_label_set_text(btn_lbl, "Yanitla");
+                lv_obj_set_style_text_font(btn_lbl, &lv_font_montserrat_14, 0);
+                lv_obj_center(btn_lbl);
+                
+                // Add padding to the bottom of the card to fit the button visually if needed
+                lv_obj_set_style_pad_bottom(item_card, 20, 0);
+            }
         }
     }
+}
+
+void AppNotificationsCustom::on_user_data_deleted(lv_event_t* e) {
+    char* id_copy = (char*)lv_event_get_user_data(e);
+    if (id_copy) {
+        free(id_copy);
+    }
+}
+
+void AppNotificationsCustom::on_reply_clicked(lv_event_t* e) {
+    char* notif_id = (char*)lv_event_get_user_data(e);
+    if (!notif_id) return;
+
+    // Create a modal popup for Quick Replies
+    lv_obj_t* mbox = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(mbox, LV_PCT(90), LV_PCT(80));
+    lv_obj_center(mbox);
+    lv_obj_set_style_bg_color(mbox, lv_color_hex(0x1a1a1a), 0);
+    lv_obj_set_style_border_width(mbox, 2, 0);
+    lv_obj_set_style_border_color(mbox, lv_color_hex(0x333333), 0);
+    lv_obj_set_flex_flow(mbox, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_t* title = lv_label_create(mbox);
+    lv_label_set_text(title, "Hizli Yanit Sec:");
+    lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+
+    const char* replies[] = {
+        "Tamam",
+        "Evet",
+        "Hayir",
+        "Mesgulum, sonra donerim.",
+        "Sesli Mesaj (Mikrofon)",
+        "Iptal"
+    };
+
+    for (int i = 0; i < 6; i++) {
+        lv_obj_t* btn = lv_btn_create(mbox);
+        lv_obj_set_width(btn, LV_PCT(100));
+        lv_obj_set_height(btn, 40);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x333333), 0);
+        
+        // Pass "notif_id|reply_text" as user_data. We need to allocate it.
+        char* payload = (char*)malloc(256);
+        snprintf(payload, 256, "%s|%s", notif_id, replies[i]);
+        lv_obj_add_event_cb(btn, on_reply_selected, LV_EVENT_CLICKED, payload);
+        lv_obj_add_event_cb(btn, on_user_data_deleted, LV_EVENT_DELETE, payload);
+
+        lv_obj_t* lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, replies[i]);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+        lv_obj_center(lbl);
+    }
+}
+
+void AppNotificationsCustom::on_reply_selected(lv_event_t* e) {
+    char* payload = (char*)lv_event_get_user_data(e);
+    lv_obj_t* btn = (lv_obj_t*)lv_event_get_target(e);
+    lv_obj_t* mbox = lv_obj_get_parent(btn);
+
+    if (payload) {
+        char* separator = strchr(payload, '|');
+        if (separator) {
+            *separator = '\0';
+            const char* notif_id = payload;
+            const char* reply_text = separator + 1;
+
+            if (strcmp(reply_text, "Iptal") != 0) {
+                if (strcmp(reply_text, "Sesli Mesaj (Mikrofon)") == 0) {
+                    // Trigger Voice Message flow (not yet fully implemented)
+                    ESP_LOGI("Notifications", "Sesli Mesaj triggered for ID: %s", notif_id);
+                    // Just for testing, send a command that the phone could intercept
+                    char ble_cmd[256];
+                    snprintf(ble_cmd, sizeof(ble_cmd), "VOICE_REPLY|%s", notif_id);
+                    ble_manager_send_media_command(ble_cmd);
+                } else {
+                    char ble_cmd[256];
+                    snprintf(ble_cmd, sizeof(ble_cmd), "REPLY|%s|%s", notif_id, reply_text);
+                    ESP_LOGI("Notifications", "Sending BLE Command: %s", ble_cmd);
+                    ble_manager_send_media_command(ble_cmd);
+                }
+            }
+        }
+    }
+
+    // Close the popup
+    lv_obj_del(mbox);
 }
 
 void AppNotificationsCustom::on_clear_clicked(lv_event_t* e) {

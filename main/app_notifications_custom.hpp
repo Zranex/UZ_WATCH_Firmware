@@ -8,6 +8,7 @@
 struct NotificationData {
     std::string sender;
     std::string message;
+    std::string notif_id;
     uint32_t timestamp;
 };
 
@@ -17,7 +18,7 @@ public:
     ~AppNotificationsCustom();
 
     // Static history management methods
-    static void push_notification(const std::string& sender, const std::string& message);
+    static void push_notification(const std::string& sender, const std::string& message, const std::string& notif_id = "");
     static std::vector<NotificationData> get_history();
     static void clear_history();
     static void update_ui_if_open();
@@ -29,6 +30,9 @@ protected:
 
 private:
     static void on_clear_clicked(lv_event_t* e);
+    static void on_reply_clicked(lv_event_t* e);
+    static void on_reply_selected(lv_event_t* e);
+    static void on_user_data_deleted(lv_event_t* e);
     
     lv_obj_t* _bg_obj = nullptr;
     lv_obj_t* list_container = nullptr;

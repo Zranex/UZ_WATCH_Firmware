@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.cpp" "user_wallpaper.c" "app_lockscreen.cpp" "lockscreen_img.c" "font_cinzel_bold_160.c" "font_cinzel_bold_54.c" "font_cinzel_bold_36.c" "app_calibration.cpp" "app_media_player.cpp" "app_notifications_custom.cpp" "ui_notification_banner.cpp" "app_activity.cpp" "app_smart_home.cpp"
+    SRCS "main.cpp" "user_wallpaper.c" "app_lockscreen.cpp" "lockscreen_img.c" "font_cinzel_bold_160.c" "font_cinzel_bold_54.c" "font_cinzel_bold_36.c" "app_calibration.cpp" "app_media_player.cpp" "app_notifications_custom.cpp" "ui_notification_banner.cpp" "app_activity.cpp" "app_smart_home.cpp" "app_local_music.cpp"
     INCLUDE_DIRS "."
     REQUIRES display_manager bsp_extra brookesia_app_calculator brookesia_app_game_2048 brookesia_app_settings app_watchface
     )

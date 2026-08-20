@@ -30,15 +30,20 @@ extern "C" {
 #include "app_notifications_custom.hpp"
 #include "app_activity.hpp"
 #include "app_smart_home.hpp"
+#include "app_local_music.hpp"
 
 extern "C" {
 #include "ble_manager.h"
 #include "wifi_manager.h"
+#include "bsp/esp32_s3_touch_amoled_2_06.h"
 }
 
 using namespace esp_brookesia;
 using namespace esp_brookesia::gui;
 using namespace esp_brookesia::systems::phone;
+
+// Global audio codec handle
+esp_codec_dev_handle_t spk_codec_dev = NULL;
 
 #define LVGL_PORT_INIT_CONFIG() \
     {                               \
@@ -49,12 +54,8 @@ using namespace esp_brookesia::systems::phone;
         .timer_period_ms = 5,     \
     }
 
-
-
 static void imu_task(void *pvParameter) {
     while(1) {
-        // Screen timeout is now fully handled by display_manager.c
-        // Wrist wake logic
         qmi8658_acc_t acc;
         if (qmi8658_read_acc(&acc) == ESP_OK) {
             float bx, by, bz;
@@ -65,19 +66,18 @@ static void imu_task(void *pvParameter) {
             float dz = acc.z - bz;
             float dist_sq = dx*dx + dy*dy + dz*dz;
             
-            // If the watch is held in a position close to the calibrated baseline (within ~0.3g threshold)
             if (dist_sq < 0.3f && !display_manager_is_on()) {
                 display_manager_turn_on();
                 ESP_UTILS_LOGI("Wrist tilt detected! Display ON.");
                 
                 if (bsp_display_lock(1000)) {
-                    lv_disp_trig_activity(NULL); // Reset LVGL inactivity timer
+                    lv_disp_trig_activity(NULL);
                     bsp_display_unlock();
                 }
             }
         }
         
-        vTaskDelay(pdMS_TO_TICKS(100)); // Run every 100ms
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -105,6 +105,28 @@ extern "C" void app_main(void)
     pedometer_task_init();
     rtc_start();
     
+    /* Initialize SD Card */
+    esp_err_t sd_err = bsp_sdcard_mount();
+    if(sd_err == ESP_OK) {
+        ESP_UTILS_LOGI("SD Card mounted successfully!");
+    } else {
+        ESP_UTILS_LOGE("Failed to mount SD Card: %d", sd_err);
+    }
+
+    /* Initialize Audio Speaker */
+    esp_err_t audio_err = bsp_audio_init(NULL);
+    if(audio_err == ESP_OK) {
+        spk_codec_dev = bsp_audio_codec_speaker_init();
+        if(spk_codec_dev) {
+            ESP_UTILS_LOGI("Speaker initialized successfully!");
+            esp_codec_dev_set_out_vol(spk_codec_dev, 70); // Set default volume to 70%
+        } else {
+            ESP_UTILS_LOGE("Failed to initialize speaker codec!");
+        }
+    } else {
+        ESP_UTILS_LOGE("Failed to initialize audio I2S: %d", audio_err);
+    }
+
     struct tm timeinfo;
     rtc_get_time(&timeinfo);
     if (timeinfo.tm_year < 120) {
@@ -131,7 +153,6 @@ extern "C" void app_main(void)
     display_manager_init();
     
     display_manager_set_wake_cb([]() {
-        // display_manager.c already sets bsp_display_brightness_set(100) before calling this
         if (bsp_display_lock(1000)) {
             lv_disp_trig_activity(NULL);
             AppLockscreen::show_again();
@@ -141,8 +162,6 @@ extern "C" void app_main(void)
 
     display_manager_set_sleep_cb([]() {
         if (bsp_display_lock(1000)) {
-            // Force close AppMediaPlayer if it is running when screen turns off.
-            // This ensures the user returns to the main launcher screen after unlocking.
             AppMediaPlayer::force_close();
             bsp_display_unlock();
         }
@@ -172,39 +191,25 @@ extern "C" void app_main(void)
         /* 7. Uygulamalari yukle */
         esp_brookesia::apps::Watchface *watchface = new (std::nothrow) esp_brookesia::apps::Watchface();
         ESP_UTILS_CHECK_NULL_EXIT(watchface, "Create Watchface failed");
-        if (phone->installApp(watchface) >= 0) {
-            ESP_UTILS_LOGI("Watchface yuklendi");
-        }
+        phone->installApp(watchface);
         
         AppCalibration *calibApp = new (std::nothrow) AppCalibration();
-        ESP_UTILS_CHECK_NULL_EXIT(calibApp, "Create CalibApp failed");
-        if (phone->installApp(calibApp) >= 0) {
-            ESP_UTILS_LOGI("Calibration App yuklendi");
-        }
+        phone->installApp(calibApp);
 
         AppMediaPlayer *mediaApp = new (std::nothrow) AppMediaPlayer();
-        ESP_UTILS_CHECK_NULL_EXIT(mediaApp, "Create MediaApp failed");
-        if (phone->installApp(mediaApp) >= 0) {
-            ESP_UTILS_LOGI("Media Player App yuklendi");
-        }
+        phone->installApp(mediaApp);
+        
+        AppLocalMusic *localMusicApp = new (std::nothrow) AppLocalMusic();
+        phone->installApp(localMusicApp);
 
         AppNotificationsCustom *notifApp = new (std::nothrow) AppNotificationsCustom();
-        ESP_UTILS_CHECK_NULL_EXIT(notifApp, "Create NotifApp failed");
-        if (phone->installApp(notifApp) >= 0) {
-            ESP_UTILS_LOGI("Custom Notifications App yuklendi");
-        }
+        phone->installApp(notifApp);
 
         AppActivity *activityApp = new (std::nothrow) AppActivity();
-        ESP_UTILS_CHECK_NULL_EXIT(activityApp, "Create ActivityApp failed");
-        if (phone->installApp(activityApp) >= 0) {
-            ESP_UTILS_LOGI("Activity App yuklendi");
-        }
+        phone->installApp(activityApp);
         
         AppSmartHome *smartHomeApp = new (std::nothrow) AppSmartHome();
-        ESP_UTILS_CHECK_NULL_EXIT(smartHomeApp, "Create SmartHomeApp failed");
-        if (phone->installApp(smartHomeApp) >= 0) {
-            ESP_UTILS_LOGI("Smart Home App yuklendi");
-        }
+        phone->installApp(smartHomeApp);
 
         /* Notifications UI Init */
         AppNotifications::init();
@@ -214,13 +219,9 @@ extern "C" void app_main(void)
             time_t now;
             struct tm timeinfo;
             Phone* phone = (Phone*)t->user_data;
-            ESP_UTILS_CHECK_NULL_EXIT(phone, "Invalid phone");
             time(&now);
             localtime_r(&now, &timeinfo);
-            ESP_UTILS_CHECK_FALSE_EXIT(
-                phone->getDisplay().getStatusBar()->setClock(timeinfo.tm_hour, timeinfo.tm_min),
-                "Refresh status bar failed"
-            );
+            phone->getDisplay().getStatusBar()->setClock(timeinfo.tm_hour, timeinfo.tm_min);
         }, 1000, phone);
     }
 

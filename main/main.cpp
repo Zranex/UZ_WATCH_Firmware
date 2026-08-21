@@ -32,6 +32,7 @@ extern "C" {
 #include "app_smart_home.hpp"
 #include "app_local_music.hpp"
 #include "app_voice_recorder.hpp"
+#include "app_find_phone.hpp"
 
 extern "C" {
 #include "ble_manager.h"
@@ -214,6 +215,9 @@ extern "C" void app_main(void)
 
         AppVoiceRecorder *voiceRecApp = new (std::nothrow) AppVoiceRecorder();
         phone->installApp(voiceRecApp);
+        
+        AppFindPhone *findPhoneApp = new (std::nothrow) AppFindPhone();
+        phone->installApp(findPhoneApp);
 
         /* Notifications UI Init */
         AppNotifications::init();

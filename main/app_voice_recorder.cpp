@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
+#include <errno.h>
 
 extern esp_codec_dev_handle_t spk_codec_dev;
 LV_FONT_DECLARE(font_cinzel_bold_36);
@@ -222,11 +223,25 @@ void AppVoiceRecorder::record_task(void *pvParameter) {
     char filepath[256];
     snprintf(filepath, sizeof(filepath), "%s/%s", RECORDINGS_DIR, filename.c_str());
 
+    // Ensure recordings directory exists
+    struct stat dir_st;
+    if (stat(RECORDINGS_DIR, &dir_st) != 0) {
+        int mk_ret = mkdir(RECORDINGS_DIR, 0755);
+        ESP_UTILS_LOGI("mkdir '%s' result: %d", RECORDINGS_DIR, mk_ret);
+    }
+
     FILE *wav_file = fopen(filepath, "wb");
     if (!wav_file) {
-        ESP_UTILS_LOGE("Failed to create recording file: %s", filepath);
+        ESP_UTILS_LOGE("Failed to create recording file: %s (errno=%d)", filepath, errno);
         esp_codec_dev_close(self->_mic_codec_dev);
+        self->_mic_codec_dev = NULL;
         self->_is_recording = false;
+        if (bsp_display_lock(100)) {
+            if (self->_status_label)
+                lv_label_set_text(self->_status_label, "Dosya Olusturulamadi!");
+            self->update_ui_state();
+            bsp_display_unlock();
+        }
         self->_record_task_handle = NULL;
         vTaskDelete(NULL);
         return;
@@ -422,7 +437,7 @@ void AppVoiceRecorder::playback_task(void *pvParameter) {
 }
 
 void AppVoiceRecorder::start_recording() {
-    if (_is_recording || _is_playing) return;
+    if (_is_recording || _is_playing || _record_task_handle != NULL) return;
 
     _is_recording = true;
     _record_start_tick = xTaskGetTickCount();

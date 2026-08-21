@@ -415,6 +415,15 @@ void AppVoiceRecorder::playback_task(void *pvParameter) {
     ESP_UTILS_LOGI("Playing: %s (rate=%lu, ch=%d, bits=%d)",
         filename.c_str(), (unsigned long)hdr.sample_rate, hdr.num_channels, hdr.bit_depth);
 
+    if (hdr.sample_rate == 0 || hdr.num_channels == 0 || hdr.bit_depth == 0) {
+        ESP_UTILS_LOGE("Corrupted WAV header, aborting playback");
+        fclose(wav_file);
+        self->_is_playing = false;
+        self->_playback_task_handle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+
     // Open speaker codec with the file's sample info
     extern esp_codec_dev_handle_t spk_codec_dev;
     if (!spk_codec_dev) {
@@ -433,23 +442,36 @@ void AppVoiceRecorder::playback_task(void *pvParameter) {
         .sample_rate = hdr.sample_rate,
         .mclk_multiple = 0,
     };
-    esp_codec_dev_open(spk_codec_dev, &fs);
+    
+    esp_err_t ret = esp_codec_dev_open(spk_codec_dev, &fs);
+    if (ret != ESP_OK) {
+        ESP_UTILS_LOGE("esp_codec_dev_open failed: %d", ret);
+        fclose(wav_file);
+        self->_is_playing = false;
+        self->_playback_task_handle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+    
     esp_codec_dev_set_out_vol(spk_codec_dev, 60);
 
     // Playback loop
-    uint8_t *buffer = (uint8_t *)heap_caps_malloc(16384, MALLOC_CAP_SPIRAM);
+    uint8_t *buffer = (uint8_t *)heap_caps_malloc(1024, MALLOC_CAP_SPIRAM);
     if (!buffer) {
-        buffer = (uint8_t *)malloc(16384);
+        buffer = (uint8_t *)malloc(1024);
     }
 
     uint32_t remaining = hdr.data_bytes;
     while (self->_is_playing && !self->_is_app_closed && remaining > 0) {
-        uint32_t to_read = (remaining > 16384) ? 16384 : remaining;
+        uint32_t to_read = (remaining > 1024) ? 1024 : remaining;
         size_t bytes_read = fread(buffer, 1, to_read, wav_file);
         if (bytes_read == 0) break;
 
         esp_codec_dev_write(spk_codec_dev, buffer, bytes_read);
         remaining -= bytes_read;
+        
+        // Prevent CPU starvation in case write is non-blocking or too fast
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
 
     free(buffer);

@@ -16,7 +16,7 @@ using namespace esp_brookesia;
 
 // Recording parameters
 #define RECORDER_SAMPLE_RATE    22050
-#define RECORDER_CHANNELS       1
+#define RECORDER_CHANNELS       2
 #define RECORDER_BITS           16
 #define RECORDER_CHUNK_SIZE     1024
 #define RECORDINGS_DIR          BSP_SD_MOUNT_POINT "/recordings"
@@ -86,18 +86,18 @@ AppVoiceRecorder::~AppVoiceRecorder() {
 }
 
 std::string AppVoiceRecorder::generate_filename() {
-    // Generate filename based on recording count
+    // Generate filename with rec_ prefix (saved to SD card root)
     char name[64];
     int count = (int)_recordings.size() + 1;
-    snprintf(name, sizeof(name), "kayit_%03d.wav", count);
+    snprintf(name, sizeof(name), "rec_%03d.wav", count);
 
     // Check if file exists, increment if needed
     char path[256];
-    snprintf(path, sizeof(path), "%s/%s", RECORDINGS_DIR, name);
+    snprintf(path, sizeof(path), "%s/%s", BSP_SD_MOUNT_POINT, name);
     while (access(path, F_OK) == 0) {
         count++;
-        snprintf(name, sizeof(name), "kayit_%03d.wav", count);
-        snprintf(path, sizeof(path), "%s/%s", RECORDINGS_DIR, name);
+        snprintf(name, sizeof(name), "rec_%03d.wav", count);
+        snprintf(path, sizeof(path), "%s/%s", BSP_SD_MOUNT_POINT, name);
     }
     return std::string(name);
 }
@@ -105,16 +105,10 @@ std::string AppVoiceRecorder::generate_filename() {
 void AppVoiceRecorder::load_recordings_list() {
     _recordings.clear();
 
-    // Create recordings directory if not exists
-    struct stat st;
-    if (stat(RECORDINGS_DIR, &st) != 0) {
-        mkdir(RECORDINGS_DIR, 0755);
-        ESP_UTILS_LOGI("Created recordings directory");
-    }
-
-    DIR *dir = opendir(RECORDINGS_DIR);
+    // Scan SD card root for rec_*.wav files
+    DIR *dir = opendir(BSP_SD_MOUNT_POINT);
     if (!dir) {
-        ESP_UTILS_LOGE("Cannot open recordings dir");
+        ESP_UTILS_LOGE("Cannot open SD card root dir");
         return;
     }
 
@@ -122,8 +116,10 @@ void AppVoiceRecorder::load_recordings_list() {
     while ((entry = readdir(dir)) != NULL) {
         if (entry->d_type == DT_REG) {
             std::string fname(entry->d_name);
-            // Only show .wav files
-            if (fname.size() > 4 && fname.substr(fname.size() - 4) == ".wav") {
+            // Only show rec_*.wav files
+            if (fname.size() > 4 && 
+                fname.substr(0, 4) == "rec_" && 
+                fname.substr(fname.size() - 4) == ".wav") {
                 _recordings.push_back(fname);
             }
         }
@@ -215,19 +211,34 @@ void AppVoiceRecorder::record_task(void *pvParameter) {
         return;
     }
 
+    // WORKAROUND: Open speaker codec as well to force I2S Master Clock (MCLK) generation.
+    // The ES7210 is in Slave mode and needs MCLK from ESP32. If TX channel is idle, MCLK might stop.
+    if (spk_codec_dev) {
+        esp_codec_dev_open(spk_codec_dev, &fs);
+        esp_codec_dev_set_out_vol(spk_codec_dev, 0); // Mute speaker during recording
+    }
+
     // Set microphone gain
     esp_codec_dev_set_in_gain(self->_mic_codec_dev, 30.0);
 
-    // Generate filename and open file
+    // Generate filename - save directly to SD card root with rec_ prefix
     std::string filename = self->generate_filename();
     char filepath[256];
-    snprintf(filepath, sizeof(filepath), "%s/%s", RECORDINGS_DIR, filename.c_str());
+    snprintf(filepath, sizeof(filepath), "%s/%s", BSP_SD_MOUNT_POINT, filename.c_str());
 
-    // Ensure recordings directory exists
-    struct stat dir_st;
-    if (stat(RECORDINGS_DIR, &dir_st) != 0) {
-        int mk_ret = mkdir(RECORDINGS_DIR, 0755);
-        ESP_UTILS_LOGI("mkdir '%s' result: %d", RECORDINGS_DIR, mk_ret);
+    ESP_UTILS_LOGI("Attempting to create file: %s", filepath);
+
+    // Quick SD card write test
+    char test_path[256];
+    snprintf(test_path, sizeof(test_path), "%s/test.tmp", BSP_SD_MOUNT_POINT);
+    FILE *test_f = fopen(test_path, "wb");
+    if (test_f) {
+        fwrite("OK", 1, 2, test_f);
+        fclose(test_f);
+        remove(test_path);
+        ESP_UTILS_LOGI("SD card write test: OK");
+    } else {
+        ESP_UTILS_LOGE("SD card write test FAILED! errno=%d", errno);
     }
 
     FILE *wav_file = fopen(filepath, "wb");
@@ -267,12 +278,25 @@ void AppVoiceRecorder::record_task(void *pvParameter) {
 
     uint32_t total_data_bytes = 0;
     uint32_t ui_update_counter = 0;
+    int consecutive_read_errors = 0;
+
+    ESP_UTILS_LOGI("Starting recording loop...");
 
     while (self->_is_recording && !self->_is_app_closed) {
         int bytes_read = esp_codec_dev_read(self->_mic_codec_dev, buffer, RECORDER_CHUNK_SIZE);
+        
         if (bytes_read > 0) {
+            consecutive_read_errors = 0;
             size_t written = fwrite(buffer, 1, bytes_read, wav_file);
+            if (written != bytes_read) {
+                ESP_UTILS_LOGE("fwrite failed! tried: %d, wrote: %d, errno: %d, ferror: %d", bytes_read, written, errno, ferror(wav_file));
+            }
             total_data_bytes += written;
+        } else if (bytes_read < 0) {
+             consecutive_read_errors++;
+             if (consecutive_read_errors % 10 == 0) {
+                 ESP_UTILS_LOGW("Codec read error! returned: %d", bytes_read);
+             }
         }
 
         // CRITICAL: Yield CPU to LVGL so touch/UI stays responsive
@@ -297,8 +321,12 @@ void AppVoiceRecorder::record_task(void *pvParameter) {
 
     ESP_UTILS_LOGI("Recording stopped: %s (%lu bytes)", filepath, (unsigned long)total_data_bytes);
 
-    // Close microphone
+    // Close microphone and dummy speaker
     esp_codec_dev_close(self->_mic_codec_dev);
+    if (spk_codec_dev) {
+        esp_codec_dev_close(spk_codec_dev);
+        esp_codec_dev_set_out_vol(spk_codec_dev, 60); // Restore volume
+    }
     self->_mic_codec_dev = NULL;
 
     // Reload list and update UI
@@ -345,7 +373,7 @@ void AppVoiceRecorder::playback_task(void *pvParameter) {
 
     std::string filename = self->_recordings[self->_selected_recording_index];
     char filepath[256];
-    snprintf(filepath, sizeof(filepath), "%s/%s", RECORDINGS_DIR, filename.c_str());
+    snprintf(filepath, sizeof(filepath), "%s/%s", BSP_SD_MOUNT_POINT, filename.c_str());
 
     FILE *wav_file = fopen(filepath, "rb");
     if (!wav_file) {
@@ -491,7 +519,7 @@ void AppVoiceRecorder::btn_delete_cb(lv_event_t *e) {
 
     std::string filename = self->_recordings[self->_selected_recording_index];
     char filepath[256];
-    snprintf(filepath, sizeof(filepath), "%s/%s", RECORDINGS_DIR, filename.c_str());
+    snprintf(filepath, sizeof(filepath), "%s/%s", BSP_SD_MOUNT_POINT, filename.c_str());
 
     if (remove(filepath) == 0) {
         ESP_UTILS_LOGI("Deleted: %s", filepath);

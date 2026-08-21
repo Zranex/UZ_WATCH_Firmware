@@ -16,7 +16,7 @@ using namespace esp_brookesia;
 
 // Recording parameters
 #define RECORDER_SAMPLE_RATE    22050
-#define RECORDER_CHANNELS       2
+#define RECORDER_CHANNELS       1
 #define RECORDER_BITS           16
 #define RECORDER_CHUNK_SIZE     1024
 #define RECORDINGS_DIR          BSP_SD_MOUNT_POINT "/recordings"
@@ -123,11 +123,17 @@ void AppVoiceRecorder::load_recordings_list() {
                 c = std::tolower(c);
             }
             
-            // Only show rec_*.wav files
+            // Only show rec_*.wav files that are valid (>= 44 bytes)
             if (fname_lower.size() > 4 && 
                 fname_lower.substr(0, 4) == "rec_" && 
                 fname_lower.substr(fname_lower.size() - 4) == ".wav") {
-                _recordings.push_back(fname);
+                
+                char fpath[256];
+                snprintf(fpath, sizeof(fpath), "%s/%s", BSP_SD_MOUNT_POINT, fname.c_str());
+                struct stat st;
+                if (stat(fpath, &st) == 0 && st.st_size >= 44) {
+                    _recordings.push_back(fname);
+                }
             }
         }
     }
@@ -218,13 +224,6 @@ void AppVoiceRecorder::record_task(void *pvParameter) {
         return;
     }
 
-    // WORKAROUND: Open speaker codec as well to force I2S Master Clock (MCLK) generation.
-    // The ES7210 is in Slave mode and needs MCLK from ESP32. If TX channel is idle, MCLK might stop.
-    if (spk_codec_dev) {
-        esp_codec_dev_open(spk_codec_dev, &fs);
-        esp_codec_dev_set_out_vol(spk_codec_dev, 0); // Mute speaker during recording
-    }
-
     // Set microphone gain
     esp_codec_dev_set_in_gain(self->_mic_codec_dev, 30.0);
 
@@ -290,23 +289,23 @@ void AppVoiceRecorder::record_task(void *pvParameter) {
     ESP_UTILS_LOGI("Starting recording loop...");
 
     while (self->_is_recording && !self->_is_app_closed) {
-        int bytes_read = esp_codec_dev_read(self->_mic_codec_dev, buffer, RECORDER_CHUNK_SIZE);
+        int ret = esp_codec_dev_read(self->_mic_codec_dev, buffer, RECORDER_CHUNK_SIZE);
         
-        if (bytes_read > 0) {
+        if (ret == 0) { // ESP_CODEC_DEV_OK
             consecutive_read_errors = 0;
-            size_t written = fwrite(buffer, 1, bytes_read, wav_file);
-            if (written != bytes_read) {
-                ESP_UTILS_LOGE("fwrite failed! tried: %d, wrote: %d, errno: %d, ferror: %d", bytes_read, written, errno, ferror(wav_file));
+            size_t written = fwrite(buffer, 1, RECORDER_CHUNK_SIZE, wav_file);
+            if (written != RECORDER_CHUNK_SIZE) {
+                ESP_UTILS_LOGE("fwrite failed! tried: %d, wrote: %d, errno: %d, ferror: %d", RECORDER_CHUNK_SIZE, written, errno, ferror(wav_file));
             }
             total_data_bytes += written;
-        } else if (bytes_read < 0) {
-             consecutive_read_errors++;
-             if (consecutive_read_errors % 10 == 0) {
-                 ESP_UTILS_LOGW("Codec read error! returned: %d", bytes_read);
-             }
-        }
-
-        // CRITICAL: Yield CPU to LVGL so touch/UI stays responsive
+        } else if (ret < 0) {
+            consecutive_read_errors++;
+            if (consecutive_read_errors > 10) {
+                ESP_UTILS_LOGE("Too many read errors, aborting recording!");
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }// CRITICAL: Yield CPU to LVGL so touch/UI stays responsive
         vTaskDelay(pdMS_TO_TICKS(1));
 
         // Update timer UI every ~500ms
@@ -328,12 +327,8 @@ void AppVoiceRecorder::record_task(void *pvParameter) {
 
     ESP_UTILS_LOGI("Recording stopped: %s (%lu bytes)", filepath, (unsigned long)total_data_bytes);
 
-    // Close microphone and dummy speaker
+    // Close microphone
     esp_codec_dev_close(self->_mic_codec_dev);
-    if (spk_codec_dev) {
-        esp_codec_dev_close(spk_codec_dev);
-        esp_codec_dev_set_out_vol(spk_codec_dev, 60); // Restore volume
-    }
     self->_mic_codec_dev = NULL;
 
     // Reload list and update UI
@@ -511,6 +506,18 @@ void AppVoiceRecorder::stop_recording() {
 void AppVoiceRecorder::start_playback() {
     if (_is_recording || _is_playing) return;
     if (_selected_recording_index < 0) return;
+
+    std::string filename = _recordings[_selected_recording_index];
+    char filepath[256];
+    snprintf(filepath, sizeof(filepath), "%s/%s", BSP_SD_MOUNT_POINT, filename.c_str());
+
+    // Abort early if file is too small (e.g., 0-byte recordings)
+    struct stat st;
+    if (stat(filepath, &st) != 0 || st.st_size < 44) {
+        ESP_UTILS_LOGE("File %s is invalid or 0 bytes. Aborting playback.", filepath);
+        if (_status_label) lv_label_set_text(_status_label, "Dosya Bozuk!");
+        return;
+    }
 
     _is_playing = true;
     update_ui_state();

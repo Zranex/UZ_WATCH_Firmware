@@ -1,4 +1,4 @@
-/*
+﻿/*
  * UZ WATCH v3 — Temel Firmware + Calculator + Calibration + IMU Wake
  * Touch wake aktif, uygulama manuel installApp ile yükleniyor
  */
@@ -33,6 +33,7 @@ extern "C" {
 #include "app_local_music.hpp"
 #include "app_voice_recorder.hpp"
 #include "app_find_phone.hpp"
+#include "app_flashlight.hpp"
 
 extern "C" {
 #include "ble_manager.h"
@@ -218,6 +219,9 @@ extern "C" void app_main(void)
         
         AppFindPhone *findPhoneApp = new (std::nothrow) AppFindPhone();
         phone->installApp(findPhoneApp);
+        
+        AppFlashlight *flashlightApp = new (std::nothrow) AppFlashlight();
+        phone->installApp(flashlightApp);
 
         /* Notifications UI Init */
         AppNotifications::init();

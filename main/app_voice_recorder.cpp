@@ -17,7 +17,7 @@ using namespace esp_brookesia;
 #define RECORDER_SAMPLE_RATE    22050
 #define RECORDER_CHANNELS       1
 #define RECORDER_BITS           16
-#define RECORDER_CHUNK_SIZE     4096
+#define RECORDER_CHUNK_SIZE     1024
 #define RECORDINGS_DIR          BSP_SD_MOUNT_POINT "/recordings"
 
 // WAV header structure for writing
@@ -260,9 +260,12 @@ void AppVoiceRecorder::record_task(void *pvParameter) {
             total_data_bytes += written;
         }
 
-        // Update timer UI every ~500ms (roughly every 5-6 reads at 22050Hz mono 16bit)
+        // CRITICAL: Yield CPU to LVGL so touch/UI stays responsive
+        vTaskDelay(pdMS_TO_TICKS(1));
+
+        // Update timer UI every ~500ms
         ui_update_counter++;
-        if (ui_update_counter >= 5) {
+        if (ui_update_counter >= 20) {
             ui_update_counter = 0;
             if (bsp_display_lock(10)) {
                 self->update_timer_label();
@@ -425,7 +428,7 @@ void AppVoiceRecorder::start_recording() {
     _record_start_tick = xTaskGetTickCount();
     update_ui_state();
 
-    xTaskCreate(record_task, "voice_rec_task", 16384, this, 4, &_record_task_handle);
+    xTaskCreate(record_task, "voice_rec_task", 16384, this, 2, &_record_task_handle);
 }
 
 void AppVoiceRecorder::stop_recording() {
@@ -440,7 +443,7 @@ void AppVoiceRecorder::start_playback() {
     _is_playing = true;
     update_ui_state();
 
-    xTaskCreate(playback_task, "voice_play_task", 16384, this, 4, &_playback_task_handle);
+    xTaskCreate(playback_task, "voice_play_task", 16384, this, 2, &_playback_task_handle);
 }
 
 void AppVoiceRecorder::stop_playback() {

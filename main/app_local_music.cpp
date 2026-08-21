@@ -28,7 +28,37 @@ LV_FONT_DECLARE(font_cinzel_bold_36);
 
 using namespace esp_brookesia;
 
+static AppLocalMusic* g_local_music_app = nullptr;
+
+extern "C" void app_local_music_play_from_ble(const char* song_name) {
+    if (!g_local_music_app) return;
+    g_local_music_app->play_song_by_name(song_name);
+}
+
+void AppLocalMusic::play_song_by_name(const char* name) {
+    if (_playlist.empty()) load_playlist(); // Ensure we have the list
+    for (size_t i = 0; i < _playlist.size(); i++) {
+        if (_playlist[i].find(name) != std::string::npos) {
+            _current_song_index = i;
+            _song_changed = true;
+            _is_playing = true;
+            _is_app_closed = false; // Ensure task stays alive
+            
+            if (_audio_task_handle == NULL) {
+                xTaskCreate(audio_task, "local_audio_task", 16384, this, 4, &_audio_task_handle);
+            }
+            
+            if (bsp_display_lock(0)) {
+                update_play_button_text();
+                bsp_display_unlock();
+            }
+            return;
+        }
+    }
+}
+
 AppLocalMusic::AppLocalMusic() : systems::phone::App("Lokal Muzik", nullptr, true) {
+    g_local_music_app = this;
     _bg_obj = nullptr;
     _title_label = nullptr;
     _btn_play = nullptr;
@@ -81,10 +111,9 @@ void AppLocalMusic::load_playlist() {
 bool AppLocalMusic::run() {
     ESP_UTILS_LOGI("Starting AppLocalMusic");
     
+    // Do NOT reset playback state if music is already running in background!
     _is_app_closed = false;
-    _is_playing = false;
-    _song_changed = false;
-
+    
     _bg_obj = lv_obj_create(lv_scr_act());
     lv_obj_set_size(_bg_obj, LV_PCT(100), LV_PCT(100));
     lv_obj_set_style_bg_color(_bg_obj, lv_color_hex(0x000000), 0);
@@ -409,3 +438,5 @@ void AppLocalMusic::audio_task(void *pvParameter) {
     app->_audio_task_handle = NULL;
     vTaskDelete(NULL);
 }
+
+

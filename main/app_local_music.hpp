@@ -12,6 +12,7 @@ class AppLocalMusic : public esp_brookesia::systems::phone::App {
 public:
     AppLocalMusic();
     ~AppLocalMusic();
+    void play_song_by_name(const char* name);
 
 protected:
     bool run() override;
@@ -50,3 +51,11 @@ private:
     bool _song_changed;
     TaskHandle_t _audio_task_handle;
 };
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+void app_local_music_play_from_ble(const char* song_name);
+#ifdef __cplusplus
+}
+#endif

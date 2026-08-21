@@ -62,8 +62,8 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
             },
             {
                 .uuid = &media_cmd_chr_uuid.u,
-                .access_cb = ble_media_chr_access, // NimBLE requires this to be non-null even for NOTIFY-only
-                .flags = BLE_GATT_CHR_F_NOTIFY,
+                .access_cb = ble_media_chr_access, // Also handles incoming WATCH_PLAY commands
+                .flags = BLE_GATT_CHR_F_NOTIFY | BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
                 .val_handle = &media_cmd_handle,
             },
             {
@@ -127,10 +127,16 @@ static int ble_media_chr_access(uint16_t conn_handle, uint16_t attr_handle,
         if (len > 0 && len < sizeof(buf)) {
             os_mbuf_copydata(ctxt->om, 0, len, buf);
             buf[len] = '\0';
-            ESP_LOGI(TAG, "Received Media Sync: %s", buf);
             
-            // Forward to C++ App
-            app_media_player_update_from_ble(buf);
+            if (strncmp(buf, "WATCH_PLAY|", 11) == 0) {
+                ESP_LOGI(TAG, "Received Local Play Command: %s", buf + 11);
+                extern void app_local_music_play_from_ble(const char* song_name);
+                app_local_music_play_from_ble(buf + 11);
+            } else {
+                ESP_LOGI(TAG, "Received Media Sync: %s", buf);
+                // Forward to C++ App
+                app_media_player_update_from_ble(buf);
+            }
         }
         return 0;
     }

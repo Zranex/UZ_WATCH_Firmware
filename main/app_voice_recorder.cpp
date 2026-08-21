@@ -116,10 +116,17 @@ void AppVoiceRecorder::load_recordings_list() {
     while ((entry = readdir(dir)) != NULL) {
         if (entry->d_type == DT_REG) {
             std::string fname(entry->d_name);
+            
+            // Convert to lowercase for checking
+            std::string fname_lower = fname;
+            for (char &c : fname_lower) {
+                c = std::tolower(c);
+            }
+            
             // Only show rec_*.wav files
-            if (fname.size() > 4 && 
-                fname.substr(0, 4) == "rec_" && 
-                fname.substr(fname.size() - 4) == ".wav") {
+            if (fname_lower.size() > 4 && 
+                fname_lower.substr(0, 4) == "rec_" && 
+                fname_lower.substr(fname_lower.size() - 4) == ".wav") {
                 _recordings.push_back(fname);
             }
         }

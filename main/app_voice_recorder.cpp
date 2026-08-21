@@ -1,4 +1,4 @@
-#include "app_voice_recorder.hpp"
+ï»¿#include "app_voice_recorder.hpp"
 #include "esp_log.h"
 #include <sys/stat.h>
 #include <dirent.h>
@@ -101,8 +101,10 @@ bool AppVoiceRecorder::close() {
 std::string AppVoiceRecorder::generate_filename() {
     int max_num = 0;
     for (const auto& fname : _recordings) {
-        if (fname.size() >= 11 && fname.substr(0, 4) == "rec_") {
-            int num = atoi(fname.substr(4, 3).c_str());
+        std::string fname_lower = fname;
+        for (char &c : fname_lower) c = std::tolower(c);
+        if (fname_lower.size() >= 11 && fname_lower.substr(0, 4) == "rec_") {
+            int num = atoi(fname_lower.substr(4, 3).c_str());
             if (num > max_num) max_num = num;
         }
     }
@@ -230,7 +232,7 @@ void AppVoiceRecorder::list_item_cb(lv_event_t *e) {
         for (uint32_t i = 0; i < child_cnt; i++) {
             lv_obj_t *child = lv_obj_get_child(self->_recordings_list, i);
             if ((int)i == index) {
-                lv_obj_set_style_bg_color(child, lv_color_hex(0xCC0000), 0); // Kýrmýzý seçim
+                lv_obj_set_style_bg_color(child, lv_color_hex(0xCC0000), 0); // Kï¿½rmï¿½zï¿½ seï¿½im
             } else {
                 lv_obj_set_style_bg_color(child, lv_color_hex(0x222222), 0);
             }
@@ -323,7 +325,8 @@ void AppVoiceRecorder::audio_task(void *pvParameter) {
         std::string filename = self->_recordings[self->_selected_index];
         char filepath[256];
         snprintf(filepath, sizeof(filepath), "%s/%s", BSP_SD_MOUNT_POINT, filename.c_str());
-
+        
+        ESP_LOGI(TAG, "PLAY: Aciliyor -> %s", filepath);
         FILE *f = fopen(filepath, "rb");
         if (f) {
             fseek(f, 44, SEEK_SET); 

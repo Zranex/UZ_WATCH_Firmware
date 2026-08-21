@@ -1,4 +1,4 @@
-#include "ble_manager.h"
+﻿#include "ble_manager.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "host/ble_hs.h"
@@ -44,6 +44,9 @@ extern void app_media_player_update_from_ble(const char* payload);
 
 // C Wrapper from app_notifications.hpp
 extern void app_notifications_show_from_ble(const char* payload);
+
+extern void app_call_manager_show_incoming_call(const char* caller_name);
+extern void app_call_manager_hide_incoming_call();
 
 static const struct ble_gatt_svc_def gatt_svcs[] = {
     {
@@ -153,10 +156,16 @@ static int ble_notif_chr_access(uint16_t conn_handle, uint16_t attr_handle,
         if (len > 0 && len < sizeof(buf)) {
             os_mbuf_copydata(ctxt->om, 0, len, buf);
             buf[len] = '\0';
-            ESP_LOGI(TAG, "Received Notification: %s", buf);
+            ESP_LOGI(TAG, "Received Notification/Command: %s", buf);
             
-            // Forward to C++ App
-            app_notifications_show_from_ble(buf);
+            if (strncmp(buf, "CALL|", 5) == 0) {
+                app_call_manager_show_incoming_call(buf + 5);
+            } else if (strcmp(buf, "CALL_END") == 0) {
+                app_call_manager_hide_incoming_call();
+            } else {
+                // Forward to C++ App as normal notification
+                app_notifications_show_from_ble(buf);
+            }
         }
         return 0;
     }

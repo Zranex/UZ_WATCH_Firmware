@@ -47,6 +47,9 @@ extern void app_notifications_show_from_ble(const char* payload);
 
 extern void app_call_manager_show_incoming_call(const char* caller_name);
 extern void app_call_manager_hide_incoming_call();
+extern void app_weather_update_from_ble(const char* city, const char* temp, const char* condition);
+extern void app_weather_update_advanced_from_ble(const char* city, const char* temp, const char* condition, 
+                                                 const char* d0, const char* d1, const char* d2);
 
 static const struct ble_gatt_svc_def gatt_svcs[] = {
     {
@@ -162,6 +165,27 @@ static int ble_notif_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                 app_call_manager_show_incoming_call(buf + 5);
             } else if (strcmp(buf, "CALL_END") == 0) {
                 app_call_manager_hide_incoming_call();
+            } else if (strncmp(buf, "WEATHER2|", 9) == 0) {
+                char* payload = buf + 9;
+                char* city = strtok(payload, "|");
+                char* temp = strtok(NULL, "|");
+                char* condition = strtok(NULL, "|");
+                char* d0 = strtok(NULL, "|");
+                char* d1 = strtok(NULL, "|");
+                char* d2 = strtok(NULL, "|");
+                if (city && temp && condition && d0 && d1 && d2) {
+                    app_weather_update_advanced_from_ble(city, temp, condition, d0, d1, d2);
+                } else if (city && temp && condition) {
+                    app_weather_update_from_ble(city, temp, condition);
+                }
+            } else if (strncmp(buf, "WEATHER|", 8) == 0) {
+                char* payload = buf + 8;
+                char* city = strtok(payload, "|");
+                char* temp = strtok(NULL, "|");
+                char* condition = strtok(NULL, "|");
+                if (city && temp && condition) {
+                    app_weather_update_from_ble(city, temp, condition);
+                }
             } else {
                 // Forward to C++ App as normal notification
                 app_notifications_show_from_ble(buf);

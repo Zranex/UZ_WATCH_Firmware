@@ -27,6 +27,8 @@ extern "C" {
 #include "app_lockscreen.hpp"
 #include "app_calibration.hpp"
 #include "app_media_player.hpp"
+#include "app_weather.hpp"
+#include "app_weather.hpp"
 #include "app_notifications_custom.hpp"
 #include "app_activity.hpp"
 #include "app_smart_home.hpp"
@@ -201,6 +203,8 @@ extern "C" void app_main(void)
 
         AppMediaPlayer *mediaApp = new (std::nothrow) AppMediaPlayer();
         phone->installApp(mediaApp);
+        AppWeather *weatherApp = new (std::nothrow) AppWeather();
+        phone->installApp(weatherApp);
         
         AppLocalMusic *localMusicApp = new (std::nothrow) AppLocalMusic();
         phone->installApp(localMusicApp);

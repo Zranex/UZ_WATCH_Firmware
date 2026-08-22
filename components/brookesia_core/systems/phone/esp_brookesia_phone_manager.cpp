@@ -1,4 +1,4 @@
-/*
+﻿/*
  * SPDX-FileCopyrightText: 2023-2025 Espressif Systems (Shanghai) CO LTD
  *
  * SPDX-License-Identifier: Apache-2.0
@@ -595,7 +595,7 @@ bool Manager::processNavigationEvent(base::Manager::NavigateType type)
             goto end;
         }
         // Process app pause
-        ESP_UTILS_CHECK_FALSE_GOTO(ret = processAppPause(active_app), end, "base::App(%d) pause failed", active_app->getId());
+        ESP_UTILS_CHECK_FALSE_GOTO(ret = processAppClose(active_app), end, "base::App(%d) pause failed", active_app->getId());
         ESP_UTILS_CHECK_FALSE_RETURN(processDisplayScreenChange(Screen::MAIN, nullptr), false,
                                      "Process screen change failed");
         resetActiveApp();
@@ -607,7 +607,7 @@ bool Manager::processNavigationEvent(base::Manager::NavigateType type)
         }
         // Save the active app and pause it
         if (active_app != nullptr) {
-            ret = processAppPause(active_app);
+            ret = processAppClose(active_app);
             ESP_UTILS_CHECK_FALSE_GOTO(ret, end, "Process app pause failed");
         }
         _recents_screen_pause_app = active_app;
@@ -1211,3 +1211,4 @@ void Manager::onRecentsScreenSnapshotDeletedEventCallback(lv_event_t *event)
 }
 
 } // namespace esp_brookesia::systems::phone
+

@@ -1,4 +1,4 @@
-#include "app_media_player.hpp"
+﻿#include "app_media_player.hpp"
 extern const lv_image_dsc_t icon_media_player;
 #include <vector>
 #include <sstream>
@@ -132,12 +132,10 @@ void AppMediaPlayer::force_close() {
 }
 
 bool AppMediaPlayer::close() {
-    ESP_UTILS_LOGI("AppMediaPlayer: close");
-    
-    // Do NOT delete _bg_obj here! esp_brookesia caches the app screen.
-    // If we delete it, returning to the app shows a white/empty screen because run() is only called once!
-    
-    return true; 
+    if (_bg_obj != nullptr) {
+        _bg_obj = nullptr;
+    }
+    return true;
 }
 
 void AppMediaPlayer::apply_theme(const char* source) {
@@ -267,3 +265,4 @@ void app_media_player_update_from_ble(const char* payload) {
         ESP_UTILS_LOGE("Failed to acquire display lock for BLE update!");
     }
 }
+

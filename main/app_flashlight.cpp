@@ -65,6 +65,13 @@ bool AppFlashlight::back() {
 }
 
 bool AppFlashlight::close() {
+    if (_bg_obj != nullptr) {
+        _bg_obj = nullptr;
+    }
+    _btn_sos = nullptr;
+    _btn_toggle = nullptr;
+    _lbl_toggle = nullptr;
+
     if (_sos_timer) {
         lv_timer_del(_sos_timer);
         _sos_timer = nullptr;
@@ -145,3 +152,5 @@ void AppFlashlight::sos_timer_cb(lv_timer_t* t) {
         self->_sos_step = 0;
     }
 }
+
+

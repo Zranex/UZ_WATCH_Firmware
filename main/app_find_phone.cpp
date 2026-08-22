@@ -1,4 +1,4 @@
-#include "app_find_phone.hpp"
+﻿#include "app_find_phone.hpp"
 extern const lv_image_dsc_t icon_find_phone;
 #include "esp_log.h"
 #include "ble_manager.h" // We use this to send BLE commands
@@ -48,6 +48,10 @@ bool AppFindPhone::back() {
 }
 
 bool AppFindPhone::close() {
+    _btn_alarm = nullptr;
+    _lbl_alarm = nullptr;
+    _status_label = nullptr;
+
     if (_is_alarming) {
         _is_alarming = false;
         ble_manager_send_media_command("FIND_PHONE_STOP");
@@ -58,7 +62,7 @@ bool AppFindPhone::close() {
 void AppFindPhone::update_ui() {
     if (_is_alarming) {
         lv_label_set_text(_status_label, "Araniyor...");
-        lv_obj_set_style_bg_color(_btn_alarm, lv_color_hex(0xFF0000), 0); // Kırmızı
+        lv_obj_set_style_bg_color(_btn_alarm, lv_color_hex(0xFF0000), 0); // KÄ±rmÄ±zÄ±
         lv_label_set_text(_lbl_alarm, LV_SYMBOL_MUTE "\nDURDUR");
     } else {
         lv_label_set_text(_status_label, "Hazir");
@@ -78,4 +82,6 @@ void AppFindPhone::btn_alarm_cb(lv_event_t *e) {
     }
     self->update_ui();
 }
+
+
 

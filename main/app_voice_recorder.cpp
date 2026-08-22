@@ -90,6 +90,14 @@ bool AppVoiceRecorder::back() {
 }
 
 bool AppVoiceRecorder::close() {
+    _title_label = nullptr;
+    _timer_label = nullptr;
+    _btn_record = nullptr;
+    _btn_play = nullptr;
+    _btn_delete = nullptr;
+    _recordings_list = nullptr;
+    _status_label = nullptr;
+
     _is_app_closed = true;
     _is_recording = false;
     _is_playing = false;
@@ -369,3 +377,5 @@ void AppVoiceRecorder::audio_task(void *pvParameter) {
     self->_task_handle = NULL;
     vTaskDelete(NULL);
 }
+
+

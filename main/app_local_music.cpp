@@ -1,4 +1,4 @@
-#include "app_local_music.hpp"
+﻿#include "app_local_music.hpp"
 extern const lv_image_dsc_t icon_local_music;
 #include "esp_lib_utils.h"
 #include "bsp/esp32_s3_touch_amoled_2_06.h"
@@ -260,6 +260,8 @@ bool AppLocalMusic::back() {
 }
 
 bool AppLocalMusic::close() {
+    stop_playback();
+
     if (_bg_obj != nullptr) {
         lv_obj_del(_bg_obj);
         _bg_obj = nullptr;
@@ -440,5 +442,6 @@ void AppLocalMusic::audio_task(void *pvParameter) {
     app->_audio_task_handle = NULL;
     vTaskDelete(NULL);
 }
+
 
 

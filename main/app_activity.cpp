@@ -1,4 +1,5 @@
 #include "app_activity.hpp"
+extern const lv_image_dsc_t icon_activity;
 #include "pedometer_task.h"
 #include "esp_log.h"
 #include <stdio.h>
@@ -7,7 +8,7 @@
 
 static const char* TAG = "AppActivity";
 
-AppActivity::AppActivity() : esp_brookesia::systems::phone::App("Aktivite", nullptr, true) {
+AppActivity::AppActivity() : esp_brookesia::systems::phone::App("Aktivite", &icon_activity, true) {
 }
 
 AppActivity::~AppActivity() {
@@ -21,6 +22,8 @@ bool AppActivity::run() {
     lv_obj_t* parent = lv_scr_act();
 
     _bg_obj = lv_obj_create(parent);
+
+    lv_obj_set_style_bg_opa(_bg_obj, LV_OPA_COVER, 0);
     lv_obj_set_size(_bg_obj, LV_PCT(100), LV_PCT(100));
     lv_obj_set_style_bg_color(_bg_obj, lv_color_hex(0x000000), 0);
     lv_obj_remove_style(_bg_obj, NULL, LV_PART_SCROLLBAR);

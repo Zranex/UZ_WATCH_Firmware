@@ -1,4 +1,5 @@
 #include "app_smart_home.hpp"
+extern const lv_image_dsc_t icon_smarthome;
 #include "esp_lib_utils.h"
 
 // Reuse the existing BLE media command function for now, since it just sends a string via 0xFF03
@@ -6,7 +7,7 @@ extern "C" void ble_manager_send_media_command(const char* command);
 
 using namespace esp_brookesia;
 
-AppSmartHome::AppSmartHome() : App("Akilli Ev", nullptr, true) {
+AppSmartHome::AppSmartHome() : App("Akilli Ev", &icon_smarthome, true) {
     _bg_obj = nullptr;
 }
 
@@ -39,6 +40,7 @@ bool AppSmartHome::run() {
     }
     
     _bg_obj = lv_obj_create(lv_scr_act());
+
     lv_obj_set_size(_bg_obj, LV_PCT(100), LV_PCT(100));
     lv_obj_center(_bg_obj);
     lv_obj_set_style_bg_color(_bg_obj, lv_color_hex(0x000000), 0);

@@ -1,4 +1,5 @@
 #include "app_local_music.hpp"
+extern const lv_image_dsc_t icon_local_music;
 #include "esp_lib_utils.h"
 #include "bsp/esp32_s3_touch_amoled_2_06.h"
 #include <stdio.h>
@@ -57,7 +58,7 @@ void AppLocalMusic::play_song_by_name(const char* name) {
     }
 }
 
-AppLocalMusic::AppLocalMusic() : systems::phone::App("Lokal Muzik", nullptr, true) {
+AppLocalMusic::AppLocalMusic() : systems::phone::App("Muzik", &icon_local_music, true) {
     g_local_music_app = this;
     _bg_obj = nullptr;
     _title_label = nullptr;
@@ -115,6 +116,7 @@ bool AppLocalMusic::run() {
     _is_app_closed = false;
     
     _bg_obj = lv_obj_create(lv_scr_act());
+
     lv_obj_set_size(_bg_obj, LV_PCT(100), LV_PCT(100));
     lv_obj_set_style_bg_color(_bg_obj, lv_color_hex(0x000000), 0);
     lv_obj_set_style_border_width(_bg_obj, 0, 0);

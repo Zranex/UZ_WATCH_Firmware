@@ -1,11 +1,12 @@
-#include "app_flashlight.hpp"
+﻿#include "app_flashlight.hpp"
+extern const lv_image_dsc_t icon_flashlight;
 #include "esp_log.h"
 #include "bsp/esp-bsp.h"
 
 #define TAG "Flashlight"
 
 AppFlashlight::AppFlashlight() 
-    : esp_brookesia::systems::phone::App("El Feneri", LV_SYMBOL_POWER, true),
+    : esp_brookesia::systems::phone::App("El Feneri", &icon_flashlight, true),
       _is_on(true), _is_sos(false), _sos_timer(nullptr), _sos_step(0), _sos_tick(0) {
 }
 
@@ -14,6 +15,12 @@ AppFlashlight::~AppFlashlight() {}
 bool AppFlashlight::run() {
     lv_obj_t* scr = lv_scr_act();
     lv_obj_clean(scr);
+
+
+    
+    
+    
+    
 
     _bg_obj = lv_obj_create(scr);
     lv_obj_set_size(_bg_obj, LV_PCT(100), LV_PCT(100));
@@ -73,12 +80,14 @@ void AppFlashlight::set_light(bool on) {
     _is_on = on;
     if (_is_on) {
         lv_obj_set_style_bg_color(_bg_obj, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(_bg_obj, LV_OPA_COVER, 0);
         lv_obj_set_style_text_color(_lbl_toggle, lv_color_hex(0xFFFFFF), 0);
         bsp_display_brightness_set(100);
     } else {
         lv_obj_set_style_bg_color(_bg_obj, lv_color_hex(0x000000), 0);
+        lv_obj_set_style_bg_opa(_bg_obj, LV_OPA_COVER, 0); // Show background image when off
         lv_obj_set_style_text_color(_lbl_toggle, lv_color_hex(0x555555), 0);
-        bsp_display_brightness_set(10); // Dim it so user can still see the button to turn it back on
+        bsp_display_brightness_set(50); // Restore to 50 so background is visible
     }
 }
 

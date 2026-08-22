@@ -1,11 +1,12 @@
 #include "app_find_phone.hpp"
+extern const lv_image_dsc_t icon_find_phone;
 #include "esp_log.h"
 #include "ble_manager.h" // We use this to send BLE commands
 
 #define TAG "FindPhone"
 
 AppFindPhone::AppFindPhone() 
-    : esp_brookesia::systems::phone::App("Telefonu Bul", LV_SYMBOL_BELL, true),
+    : esp_brookesia::systems::phone::App("Tel Bul", &icon_find_phone, true),
       _is_alarming(false) {
 }
 
@@ -14,6 +15,7 @@ AppFindPhone::~AppFindPhone() {}
 bool AppFindPhone::run() {
     lv_obj_t* scr = lv_scr_act();
     lv_obj_clean(scr);
+
     
     // UI: Title
     lv_obj_t* title_label = lv_label_create(scr);
@@ -56,7 +58,7 @@ bool AppFindPhone::close() {
 void AppFindPhone::update_ui() {
     if (_is_alarming) {
         lv_label_set_text(_status_label, "Araniyor...");
-        lv_obj_set_style_bg_color(_btn_alarm, lv_color_hex(0xFF0000), 0); // Kýrmýzý
+        lv_obj_set_style_bg_color(_btn_alarm, lv_color_hex(0xFF0000), 0); // KÄ±rmÄ±zÄ±
         lv_label_set_text(_lbl_alarm, LV_SYMBOL_MUTE "\nDURDUR");
     } else {
         lv_label_set_text(_status_label, "Hazir");

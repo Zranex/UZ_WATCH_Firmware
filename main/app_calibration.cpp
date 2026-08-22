@@ -1,4 +1,5 @@
 #include "app_calibration.hpp"
+extern const lv_image_dsc_t icon_calibration;
 #include "esp_lib_utils.h"
 
 // Initialize static variables
@@ -8,7 +9,7 @@ float AppCalibration::_baseline_z = 1.0f; // Default assuming watch face up
 bool AppCalibration::_is_loaded = false;
 
 AppCalibration::AppCalibration() 
-    : esp_brookesia::systems::phone::App("Kalibrasyon", nullptr, true) 
+    : esp_brookesia::systems::phone::App("Kalibre", &icon_calibration, true) 
 {
     load_calibration();
 }

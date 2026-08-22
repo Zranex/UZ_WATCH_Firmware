@@ -1,4 +1,5 @@
 #include "app_notifications_custom.hpp"
+extern const lv_image_dsc_t icon_notifications;
 #include "esp_lib_utils.h"
 #include "bsp/esp-bsp.h"
 
@@ -11,7 +12,7 @@ std::vector<NotificationData> AppNotificationsCustom::history;
 std::mutex AppNotificationsCustom::history_mutex;
 AppNotificationsCustom* AppNotificationsCustom::_instance = nullptr;
 
-AppNotificationsCustom::AppNotificationsCustom() : App("Notifications", nullptr, true) {
+AppNotificationsCustom::AppNotificationsCustom() : App("Bildirimler", &icon_notifications, true) {
     _bg_obj = nullptr;
     list_container = nullptr;
     btn_clear = nullptr;
@@ -61,6 +62,7 @@ bool AppNotificationsCustom::run() {
     
     // Background
     _bg_obj = lv_obj_create(lv_scr_act());
+
     lv_obj_set_size(_bg_obj, LV_PCT(100), LV_PCT(100));
     lv_obj_set_style_bg_color(_bg_obj, lv_color_hex(0x000000), 0);
     lv_obj_set_style_border_width(_bg_obj, 0, 0);

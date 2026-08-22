@@ -14,6 +14,7 @@ protected:
 
 private:
     lv_obj_t* _bg_obj;
+    
     lv_obj_t* _btn_sos;
     lv_obj_t* _btn_toggle;
     lv_obj_t* _lbl_toggle;

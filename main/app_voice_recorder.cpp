@@ -1,4 +1,5 @@
 ﻿#include "app_voice_recorder.hpp"
+extern const lv_image_dsc_t icon_voice_recorder;
 #include "esp_log.h"
 #include <sys/stat.h>
 #include <dirent.h>
@@ -11,7 +12,7 @@ extern esp_codec_dev_handle_t bsp_audio_codec_microphone_init(void);
 extern esp_codec_dev_handle_t spk_codec_dev;
 
 AppVoiceRecorder::AppVoiceRecorder() 
-    : esp_brookesia::systems::phone::App("Ses Kayit", LV_SYMBOL_AUDIO, true),
+    : esp_brookesia::systems::phone::App("Ses Kaydi", &icon_voice_recorder, true),
       _is_recording(false), _is_playing(false), _is_app_closed(true), 
       _record_start_tick(0), _selected_index(-1), _task_handle(NULL), _mic_codec(NULL) {
 }
@@ -23,6 +24,7 @@ bool AppVoiceRecorder::run() {
     _selected_index = -1;
     lv_obj_t* scr = lv_scr_act();
     lv_obj_clean(scr);
+
     
     // UI: Title
     _title_label = lv_label_create(scr);

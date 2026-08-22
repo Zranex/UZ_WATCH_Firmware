@@ -1,4 +1,5 @@
 #include "app_media_player.hpp"
+extern const lv_image_dsc_t icon_media_player;
 #include <vector>
 #include <sstream>
 #include "esp_lib_utils.h"
@@ -14,7 +15,7 @@ using namespace esp_brookesia;
 
 AppMediaPlayer* AppMediaPlayer::_instance = nullptr;
 
-AppMediaPlayer::AppMediaPlayer() : App("Simdi Caliyor", nullptr, true) {
+AppMediaPlayer::AppMediaPlayer() : App("Simdi Caliyor", &icon_media_player, true) {
     _bg_obj = nullptr;
     _label_source = nullptr;
     _label_title = nullptr;
@@ -39,6 +40,7 @@ bool AppMediaPlayer::run() {
     // Create a container to hold all our widgets.
     // This ensures we can cleanly delete everything in close() and prevent duplicate children.
     _bg_obj = lv_obj_create(lv_scr_act());
+
     lv_obj_set_size(_bg_obj, LV_PCT(100), LV_PCT(100));
     lv_obj_center(_bg_obj);
     lv_obj_set_style_border_width(_bg_obj, 0, 0); // No border for the main container

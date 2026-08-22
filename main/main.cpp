@@ -36,6 +36,7 @@ extern "C" {
 #include "app_voice_recorder.hpp"
 #include "app_find_phone.hpp"
 #include "app_flashlight.hpp"
+#include "app_agenda.hpp"
 
 extern "C" {
 #include "ble_manager.h"
@@ -224,8 +225,11 @@ extern "C" void app_main(void)
         AppFindPhone *findPhoneApp = new (std::nothrow) AppFindPhone();
         phone->installApp(findPhoneApp);
         
-        AppFlashlight *flashlightApp = new (std::nothrow) AppFlashlight();
+                AppFlashlight *flashlightApp = new (std::nothrow) AppFlashlight();
         phone->installApp(flashlightApp);
+
+        AppAgenda *agendaApp = new (std::nothrow) AppAgenda();
+        phone->installApp(agendaApp);
 
         /* Notifications UI Init */
         AppNotifications::init();
@@ -247,3 +251,4 @@ extern "C" void app_main(void)
     ESP_UTILS_LOGI("UZ WATCH v3 - Sistem Hazir!");
     ble_manager_init();
 }
+

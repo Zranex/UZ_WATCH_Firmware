@@ -51,6 +51,7 @@ extern void app_weather_update_from_ble(const char* city, const char* temp, cons
 extern void app_weather_update_advanced_from_ble(const char* city, const char* temp, const char* condition, 
                                                  const char* d0, const char* d1, const char* d2);
 
+extern void app_agenda_update_from_ble(const char* payload);
 static const struct ble_gatt_svc_def gatt_svcs[] = {
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
@@ -165,6 +166,8 @@ static int ble_notif_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                 app_call_manager_show_incoming_call(buf + 5);
             } else if (strcmp(buf, "CALL_END") == 0) {
                 app_call_manager_hide_incoming_call();
+                        } else if (strncmp(buf, "AGENDA|", 7) == 0) {
+                app_agenda_update_from_ble(buf + 7);
             } else if (strncmp(buf, "WEATHER2|", 9) == 0) {
                 char* payload = buf + 9;
                 char* city = strtok(payload, "|");
@@ -337,3 +340,6 @@ void ble_manager_send_media_command(const char* command) {
         ESP_LOGW(TAG, "Cannot send command, not connected.");
     }
 }
+
+
+

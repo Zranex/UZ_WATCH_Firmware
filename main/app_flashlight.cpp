@@ -14,7 +14,7 @@ AppFlashlight::~AppFlashlight() {}
 
 bool AppFlashlight::run() {
     lv_obj_t* scr = lv_scr_act();
-    lv_obj_clean(scr);
+
 
 
     
@@ -152,5 +152,6 @@ void AppFlashlight::sos_timer_cb(lv_timer_t* t) {
         self->_sos_step = 0;
     }
 }
+
 
 

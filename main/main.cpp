@@ -37,6 +37,7 @@ extern "C" {
 #include "app_find_phone.hpp"
 #include "app_flashlight.hpp"
 #include "app_agenda.hpp"
+#include "app_airdrop.hpp"
 
 extern "C" {
 #include "ble_manager.h"
@@ -231,6 +232,9 @@ extern "C" void app_main(void)
         AppAgenda *agendaApp = new (std::nothrow) AppAgenda();
         phone->installApp(agendaApp);
 
+        AppAirDrop *airdropApp = new (std::nothrow) AppAirDrop();
+        if(airdropApp) phone->installApp(airdropApp);
+
         /* Notifications UI Init */
         AppNotifications::init();
 
@@ -251,4 +255,5 @@ extern "C" void app_main(void)
     ESP_UTILS_LOGI("UZ WATCH v3 - Sistem Hazir!");
     ble_manager_init();
 }
+
 

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * UZ WATCH v3 — Temel Firmware + Calculator + Calibration + IMU Wake
  * Touch wake aktif, uygulama manuel installApp ile yükleniyor
  */
@@ -73,10 +73,13 @@ static void imu_task(void *pvParameter) {
             float dz = acc.z - bz;
             float dist_sq = dx*dx + dy*dy + dz*dz;
             
-            if (dist_sq < 0.3f && !display_manager_is_on()) {
-                display_manager_turn_on();
-                ESP_UTILS_LOGI("Wrist tilt detected! Display ON.");
+            if (dist_sq < 1.5f) {
+                if (!display_manager_is_on()) {
+                    display_manager_turn_on();
+                    ESP_UTILS_LOGI("Wrist tilt detected! Display ON.");
+                }
                 
+                // Keep the display awake as long as we are looking at it
                 if (bsp_display_lock(1000)) {
                     lv_disp_trig_activity(NULL);
                     bsp_display_unlock();

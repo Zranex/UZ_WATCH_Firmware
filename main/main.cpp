@@ -37,7 +37,7 @@ extern "C" {
 #include "app_find_phone.hpp"
 #include "app_flashlight.hpp"
 #include "app_agenda.hpp"
-#include "app_airdrop.hpp"
+// #include "app_airdrop.hpp"
 
 extern "C" {
 #include "ble_manager.h"
@@ -73,7 +73,7 @@ static void imu_task(void *pvParameter) {
             float dz = acc.z - bz;
             float dist_sq = dx*dx + dy*dy + dz*dz;
             
-            if (dist_sq < 1.5f) {
+            if (dist_sq < 0.25f) {
                 if (!display_manager_is_on()) {
                     display_manager_turn_on();
                     ESP_UTILS_LOGI("Wrist tilt detected! Display ON.");
@@ -235,8 +235,8 @@ extern "C" void app_main(void)
         AppAgenda *agendaApp = new (std::nothrow) AppAgenda();
         phone->installApp(agendaApp);
 
-        AppAirDrop *airdropApp = new (std::nothrow) AppAirDrop();
-        if(airdropApp) phone->installApp(airdropApp);
+        // AppAirDrop *airdropApp = new (std::nothrow) AppAirDrop();
+        // if(airdropApp) phone->installApp(airdropApp);
 
         /* Notifications UI Init */
         AppNotifications::init();
@@ -249,6 +249,17 @@ extern "C" void app_main(void)
             time(&now);
             localtime_r(&now, &timeinfo);
             phone->getDisplay().getStatusBar()->setClock(timeinfo.tm_hour, timeinfo.tm_min);
+            
+            // Battery Update (her 10 saniyede bir I2C yormamak icin)
+            static int bat_tick = 0;
+            if (++bat_tick >= 10) {
+                bat_tick = 0;
+                int percent = bsp_battery_get_percent();
+                bool charging = bsp_battery_is_charging();
+                if (percent >= 0 && percent <= 100) {
+                    phone->getDisplay().getStatusBar()->setBatteryPercent(charging, percent);
+                }
+            }
         }, 1000, phone);
     }
 

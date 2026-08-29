@@ -153,7 +153,7 @@ static void display_manager_task(void *arg) {
 }
 
 void display_manager_init(void) {
-    timeout_ms = 30000;
+    timeout_ms = 10000;
 
     /*
      * NOTE: Do NOT call gpio_config() on TOUCH_INT_PIN here!

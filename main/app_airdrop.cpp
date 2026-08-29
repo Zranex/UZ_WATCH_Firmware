@@ -1,4 +1,4 @@
-﻿#include "lvgl.h"
+#include "lvgl.h"
 extern "C" const lv_image_dsc_t icon_airdrop;
 
 
@@ -61,8 +61,8 @@ bool AppAirDrop::back() {
 }
 
 bool AppAirDrop::close() {
-    ESP_LOGI(TAG, "AirDrop Uygulamasi kapaniyor, sunucu durduruluyor...");
-    AirDropManager::stop_server();
+    ESP_LOGI(TAG, "AirDrop Uygulamasi kapaniyor, arka planda calismaya devam ediyor.");
+    // AirDropManager::stop_server();
     _bg_obj = nullptr;
     _label_status = nullptr;
     _label_desc = nullptr;

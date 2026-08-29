@@ -69,6 +69,53 @@ int rtc_register_write(uint8_t regAddr, uint8_t *data, uint8_t len) {
     return 0;
 }
 
+// AXP2101 Battery Telemetry
+static i2c_master_dev_handle_t axp_dev_handle = NULL;
+
+esp_err_t bsp_battery_init(void) {
+    i2c_device_config_t dev_config = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = 0x34, // AXP2101 I2C Address
+        .scl_speed_hz = CONFIG_I2C_MASTER_FREQUENCY,
+        .scl_wait_us = 0,
+        .flags = { .disable_ack_check = 0 }
+    };
+    esp_err_t ret = i2c_master_bus_add_device(bus_handle, &dev_config, &axp_dev_handle);
+    if(ret != ESP_OK) return ret;
+
+    // Optional: Enable ADC channels if they are disabled by default
+    // For AXP2101, usually register 0x27 enables ADCs. We just try to read 0xA4 first.
+    return ESP_OK;
+}
+
+int bsp_battery_get_percent(void) {
+    if (!axp_dev_handle) return 100;
+    
+    uint8_t reg = 0xA4; // Battery percentage register
+    uint8_t percent = 0;
+    esp_err_t ret = i2c_master_transmit_receive(axp_dev_handle, &reg, 1, &percent, 1, I2C_MASTER_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        // AXP2101 percent register has range 0-100, but MSB might be valid flag.
+        // According to datasheet, bit 7 is valid flag? 
+        // Just return percent & 0x7F to be safe.
+        return percent & 0x7F;
+    }
+    return -1;
+}
+
+bool bsp_battery_is_charging(void) {
+    if (!axp_dev_handle) return false;
+    uint8_t reg = 0x00; // Power status 1
+    uint8_t status = 0;
+    esp_err_t ret = i2c_master_transmit_receive(axp_dev_handle, &reg, 1, &status, 1, I2C_MASTER_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        // AXP2101 status 1 register: 
+        // 0x00: Bit 5 = VBUS presence status (1 = present, meaning plugged in)
+        return (status & (1 << 5)) != 0;
+    }
+    return false;
+}
+
 esp_err_t bsp_extra_init(void)
 {
     esp_err_t ret;
@@ -102,7 +149,10 @@ esp_err_t bsp_extra_init(void)
         // Don't return error here, to let the system boot even if NVS fails
     }
 
-    // bsp_power_init removed - not available in this BSP version
+    ret = bsp_battery_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Battery AXP2101 init failed");
+    }
 
     return ESP_OK;
 }

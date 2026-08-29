@@ -1,4 +1,4 @@
-﻿#include "airdrop_manager.hpp"
+#include "airdrop_manager.hpp"
 #include "bsp/esp32_s3_touch_amoled_2_06.h"
 #include "esp_log.h"
 #include "esp_http_server.h"
@@ -133,15 +133,21 @@ static const httpd_uri_t uri_upload = {
 esp_err_t AirDropManager::init() {
     if (_is_sd_mounted) return ESP_OK;
 
-    ESP_LOGI(TAG, "Mounting SD Card...");
-    esp_err_t ret = bsp_sdcard_mount();
-    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(TAG, "Failed to mount SD card (err: %s)", esp_err_to_name(ret));
-        return ret;
+    ESP_LOGI(TAG, "Checking SD Card mount status...");
+    DIR* dir = opendir(BSP_SD_MOUNT_POINT);
+    if (dir) {
+        closedir(dir);
+        _is_sd_mounted = true;
+        ESP_LOGI(TAG, "SD Card already mounted by system.");
+    } else {
+        ESP_LOGI(TAG, "Mounting SD Card explicitly...");
+        esp_err_t ret = bsp_sdcard_mount();
+        if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "Failed to mount SD card (err: %s)", esp_err_to_name(ret));
+            return ret;
+        }
+        _is_sd_mounted = true;
     }
-
-    _is_sd_mounted = true;
-    ESP_LOGI(TAG, "SD Card mounted at %s", BSP_SD_MOUNT_POINT);
 
     // Create /AirDrop directory if it doesn't exist
     struct stat st = {0};

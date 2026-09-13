@@ -14,6 +14,7 @@ protected:
     bool close() override;
 
 private:
+    lv_obj_t* _bg_obj;
     lv_obj_t* _btn_alarm;
     lv_obj_t* _lbl_alarm;
     lv_obj_t* _status_label;

@@ -6,8 +6,6 @@ extern const lv_image_dsc_t icon_activity;
 
 #define DAILY_STEP_GOAL 10000
 
-static const char* TAG = "AppActivity";
-
 AppActivity::AppActivity() : esp_brookesia::systems::phone::App("Aktivite", &icon_activity, true) {
 }
 

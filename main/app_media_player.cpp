@@ -1,4 +1,4 @@
-﻿#include "app_media_player.hpp"
+#include "app_media_player.hpp"
 extern const lv_image_dsc_t icon_media_player;
 #include <vector>
 #include <sstream>
@@ -122,7 +122,7 @@ bool AppMediaPlayer::run() {
 }
 
 bool AppMediaPlayer::back() {
-    return true; // Use default back behavior
+    return close();
 }
 
 void AppMediaPlayer::force_close() {
@@ -133,7 +133,15 @@ void AppMediaPlayer::force_close() {
 
 bool AppMediaPlayer::close() {
     if (_bg_obj != nullptr) {
+        lv_obj_del(_bg_obj);
         _bg_obj = nullptr;
+        _label_source = nullptr;
+        _label_title = nullptr;
+        _label_artist = nullptr;
+        _btn_prev = nullptr;
+        _btn_play = nullptr;
+        _btn_next = nullptr;
+        _label_play_icon = nullptr;
     }
     return true;
 }

@@ -1,4 +1,4 @@
-﻿#include "app_flashlight.hpp"
+#include "app_flashlight.hpp"
 extern const lv_image_dsc_t icon_flashlight;
 #include "esp_log.h"
 #include "bsp/esp-bsp.h"
@@ -61,11 +61,12 @@ bool AppFlashlight::run() {
 }
 
 bool AppFlashlight::back() {
-    return true; // Let Brookesia handle the back navigation
+    return close();
 }
 
 bool AppFlashlight::close() {
     if (_bg_obj != nullptr) {
+        lv_obj_del(_bg_obj);
         _bg_obj = nullptr;
     }
     _btn_sos = nullptr;

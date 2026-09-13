@@ -14,6 +14,9 @@ extern "C" void bsp_audio_power_amp_enable(bool enable);
 
 AppVoiceRecorder::AppVoiceRecorder() 
     : esp_brookesia::systems::phone::App("Ses Kaydi", &icon_voice_recorder, true),
+      _bg_obj(nullptr), _title_label(nullptr), _timer_label(nullptr),
+      _btn_record(nullptr), _btn_play(nullptr), _btn_delete(nullptr),
+      _recordings_list(nullptr), _status_label(nullptr),
       _is_recording(false), _is_playing(false), _is_app_closed(true), 
       _record_start_tick(0), _selected_index(-1), _task_handle(NULL), _mic_codec(NULL) {
 }
@@ -23,8 +26,9 @@ AppVoiceRecorder::~AppVoiceRecorder() {}
 bool AppVoiceRecorder::run() {
     _is_app_closed = false;
     _selected_index = -1;
-    lv_obj_t* scr = lv_scr_act();
-    lv_obj_clean(scr);
+    if (_bg_obj != nullptr) {
+        return true;
+    }
 
     // Ensure recordings directory exists on SD card
     struct stat st = {0};
@@ -32,24 +36,30 @@ bool AppVoiceRecorder::run() {
         mkdir("/sdcard/recordings", 0755);
     }
 
+    _bg_obj = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(_bg_obj, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(_bg_obj, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_border_width(_bg_obj, 0, 0);
+    lv_obj_set_style_radius(_bg_obj, 0, 0);
+    lv_obj_clear_flag(_bg_obj, LV_OBJ_FLAG_SCROLLABLE);
     
     // UI: Title
-    _title_label = lv_label_create(scr);
+    _title_label = lv_label_create(_bg_obj);
     lv_label_set_text(_title_label, "Ses Kaydedici");
     lv_obj_align(_title_label, LV_ALIGN_TOP_MID, 0, 10);
 
     // UI: Timer
-    _timer_label = lv_label_create(scr);
+    _timer_label = lv_label_create(_bg_obj);
     lv_label_set_text(_timer_label, "00:00");
     lv_obj_align(_timer_label, LV_ALIGN_TOP_MID, 0, 40);
 
     // UI: Status
-    _status_label = lv_label_create(scr);
+    _status_label = lv_label_create(_bg_obj);
     lv_label_set_text(_status_label, "Hazir");
     lv_obj_align(_status_label, LV_ALIGN_TOP_MID, 0, 65);
 
     // UI: Buttons Row
-    lv_obj_t* btn_row = lv_obj_create(scr);
+    lv_obj_t* btn_row = lv_obj_create(_bg_obj);
     lv_obj_set_size(btn_row, LV_PCT(100), 80);
     lv_obj_align(btn_row, LV_ALIGN_BOTTOM_MID, 0, -10);
     lv_obj_set_style_bg_opa(btn_row, 0, 0);
@@ -82,7 +92,7 @@ bool AppVoiceRecorder::run() {
     lv_obj_center(lbl_del);
 
     // UI: List
-    _recordings_list = lv_list_create(scr);
+    _recordings_list = lv_list_create(_bg_obj);
     lv_obj_set_size(_recordings_list, LV_PCT(90), 180);
     lv_obj_align(_recordings_list, LV_ALIGN_CENTER, 0, 0);
 
@@ -93,18 +103,10 @@ bool AppVoiceRecorder::run() {
 }
 
 bool AppVoiceRecorder::back() {
-    return true;
+    return close();
 }
 
 bool AppVoiceRecorder::close() {
-    _title_label = nullptr;
-    _timer_label = nullptr;
-    _btn_record = nullptr;
-    _btn_play = nullptr;
-    _btn_delete = nullptr;
-    _recordings_list = nullptr;
-    _status_label = nullptr;
-
     _is_app_closed = true;
     _is_recording = false;
     _is_playing = false;
@@ -112,6 +114,17 @@ bool AppVoiceRecorder::close() {
         esp_codec_dev_close(_mic_codec);
         _mic_codec = NULL;
     }
+    if (_bg_obj != nullptr) {
+        lv_obj_del(_bg_obj);
+        _bg_obj = nullptr;
+    }
+    _title_label = nullptr;
+    _timer_label = nullptr;
+    _btn_record = nullptr;
+    _btn_play = nullptr;
+    _btn_delete = nullptr;
+    _recordings_list = nullptr;
+    _status_label = nullptr;
     return true;
 }
 

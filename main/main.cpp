@@ -67,7 +67,7 @@ static void imu_task(void *pvParameter) {
         bool is_display_on = display_manager_is_on();
         
         qmi8658_acc_t acc;
-        if (qmi8658_read_acc(&acc) == ESP_OK) {
+        if (pedometer_get_latest_acc(&acc) == ESP_OK) {
             float bx, by, bz;
             AppCalibration::get_calibrated_baseline(&bx, &by, &bz);
             

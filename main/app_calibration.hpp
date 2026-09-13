@@ -22,12 +22,14 @@ public:
 protected:
     bool run() override;
     bool back() override;
+    bool close() override;
 
 private:
     static void on_calibrate_btn_clicked(lv_event_t* e);
     static void save_calibration(float x, float y, float z);
     static void load_calibration();
 
+    lv_obj_t* _bg_obj;
     lv_obj_t* _label_info;
     lv_obj_t* _btn_calibrate;
     lv_obj_t* _label_status;

@@ -24,6 +24,13 @@ uint32_t pedometer_get_steps(void);
  */
 void pedometer_reset_steps(void);
 
+#include "qmi8658.h"
+
+/**
+ * @brief Get the latest accelerometer reading without an extra I2C transaction
+ */
+esp_err_t pedometer_get_latest_acc(qmi8658_acc_t *acc);
+
 #ifdef __cplusplus
 }
 #endif

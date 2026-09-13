@@ -1,6 +1,7 @@
 #include "app_calibration.hpp"
 extern const lv_image_dsc_t icon_calibration;
 #include "esp_lib_utils.h"
+#include "pedometer_task.h"
 
 // Initialize static variables
 float AppCalibration::_baseline_x = 0.0f;
@@ -9,7 +10,8 @@ float AppCalibration::_baseline_z = 1.0f; // Default assuming watch face up
 bool AppCalibration::_is_loaded = false;
 
 AppCalibration::AppCalibration() 
-    : esp_brookesia::systems::phone::App("Kalibre", &icon_calibration, true) 
+    : esp_brookesia::systems::phone::App("Kalibre", &icon_calibration, true),
+      _bg_obj(nullptr), _label_info(nullptr), _btn_calibrate(nullptr), _label_status(nullptr)
 {
     load_calibration();
 }
@@ -18,19 +20,24 @@ AppCalibration::~AppCalibration() {
 }
 
 bool AppCalibration::run() {
-    lv_obj_t * screen = lv_scr_act();
-    if (!screen) return false;
+    if (_bg_obj != nullptr) return true;
 
-    lv_obj_set_style_bg_color(screen, lv_color_hex(0x111111), 0);
-    lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+    _bg_obj = lv_obj_create(lv_scr_act());
+    if (!_bg_obj) return false;
 
-    _label_info = lv_label_create(screen);
+    lv_obj_set_size(_bg_obj, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(_bg_obj, lv_color_hex(0x111111), 0);
+    lv_obj_set_style_border_width(_bg_obj, 0, 0);
+    lv_obj_set_style_radius(_bg_obj, 0, 0);
+    lv_obj_clear_flag(_bg_obj, LV_OBJ_FLAG_SCROLLABLE);
+
+    _label_info = lv_label_create(_bg_obj);
     lv_label_set_text(_label_info, "Saati ekranina\nbaktigin acidaki\ngibi tut ve\nKalibre Et tusuna bas.");
     lv_obj_set_style_text_color(_label_info, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_text_align(_label_info, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(_label_info, LV_ALIGN_TOP_MID, 0, 80);
 
-    _btn_calibrate = lv_btn_create(screen);
+    _btn_calibrate = lv_btn_create(_bg_obj);
     lv_obj_set_size(_btn_calibrate, 200, 60);
     lv_obj_align(_btn_calibrate, LV_ALIGN_CENTER, 0, 40);
     lv_obj_set_style_bg_color(_btn_calibrate, lv_color_hex(0x007BFF), 0);
@@ -40,7 +47,7 @@ bool AppCalibration::run() {
     lv_label_set_text(btn_label, "Kalibre Et");
     lv_obj_center(btn_label);
 
-    _label_status = lv_label_create(screen);
+    _label_status = lv_label_create(_bg_obj);
     lv_label_set_text(_label_status, "Mevcut: Bekleniyor");
     lv_obj_set_style_text_color(_label_status, lv_color_hex(0xAAAAAA), 0);
     lv_obj_align(_label_status, LV_ALIGN_BOTTOM_MID, 0, -40);
@@ -48,8 +55,19 @@ bool AppCalibration::run() {
     return true;
 }
 
-bool AppCalibration::back() {
+bool AppCalibration::close() {
+    if (_bg_obj != nullptr) {
+        lv_obj_del(_bg_obj);
+        _bg_obj = nullptr;
+    }
+    _label_info = nullptr;
+    _btn_calibrate = nullptr;
+    _label_status = nullptr;
     return true;
+}
+
+bool AppCalibration::back() {
+    return close();
 }
 
 void AppCalibration::on_calibrate_btn_clicked(lv_event_t* e) {
@@ -57,7 +75,7 @@ void AppCalibration::on_calibrate_btn_clicked(lv_event_t* e) {
     if (!app) return;
 
     qmi8658_acc_t acc;
-    if (qmi8658_read_acc(&acc) == ESP_OK) {
+    if (pedometer_get_latest_acc(&acc) == ESP_OK) {
         save_calibration(acc.x, acc.y, acc.z);
         
         char buf[64];

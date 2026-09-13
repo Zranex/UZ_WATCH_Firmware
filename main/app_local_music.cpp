@@ -324,6 +324,12 @@ void AppLocalMusic::audio_task(void *pvParameter) {
     
     const int CHUNK_SIZE = 16384; 
     uint8_t * buf = (uint8_t *)malloc(CHUNK_SIZE);
+    if (!buf) {
+        ESP_UTILS_LOGE("Failed to allocate audio chunk buffer!");
+        app->_audio_task_handle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
 
     while (!app->_is_app_closed) {
         

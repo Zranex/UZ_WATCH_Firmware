@@ -19,6 +19,7 @@ protected:
     bool close() override;
 
 private:
+    lv_obj_t* _bg_obj;
     lv_obj_t* _title_label;
     lv_obj_t* _timer_label;
     lv_obj_t* _btn_record;

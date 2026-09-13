@@ -1,4 +1,4 @@
-﻿#include "app_agenda.hpp"
+#include "app_agenda.hpp"
 #include "esp_lib_utils.h"
 #include <string.h>
 
@@ -127,20 +127,26 @@ void app_agenda_add_item(int id, const char* text) {
     }
 }
 
+extern "C" bool bsp_display_lock(uint32_t timeout_ms);
+extern "C" void bsp_display_unlock(void);
+
 void app_agenda_update_from_ble(const char* payload) {
-    if (strcmp(payload, "CLEAR") == 0) {
-        app_agenda_clear();
-    } else {
-        // Parse ID|Text
-        char buf[256];
-        strncpy(buf, payload, sizeof(buf)-1);
-        buf[255] = 0;
-        
-        char* id_str = strtok(buf, "|");
-        char* text = strtok(NULL, "|");
-        if (id_str && text) {
-            app_agenda_add_item(atoi(id_str), text);
+    if (bsp_display_lock(1000)) {
+        if (strcmp(payload, "CLEAR") == 0) {
+            app_agenda_clear();
+        } else {
+            // Parse ID|Text
+            char buf[256];
+            strncpy(buf, payload, sizeof(buf)-1);
+            buf[255] = 0;
+            
+            char* id_str = strtok(buf, "|");
+            char* text = strtok(NULL, "|");
+            if (id_str && text) {
+                app_agenda_add_item(atoi(id_str), text);
+            }
         }
+        bsp_display_unlock();
     }
 }
 

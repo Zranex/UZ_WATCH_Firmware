@@ -9,6 +9,8 @@ static const char *TAG = "pedometer_task";
 
 // Global step counter
 static volatile uint32_t step_count = 0;
+static qmi8658_acc_t s_latest_acc = {0};
+static volatile bool s_acc_valid = false;
 
 // Algorithm parameters
 #define PEDOMETER_TASK_DELAY_MS 50      // 20 Hz sampling rate (Saves 60% I2C power, plenty fast for walking)
@@ -27,6 +29,8 @@ static void pedometer_task(void *pvParameter)
 
     while (1) {
         if (qmi8658_read_acc(&acc) == ESP_OK) {
+            s_latest_acc = acc;
+            s_acc_valid = true;
             // Calculate vector magnitude
             float mag = sqrtf((acc.x * acc.x) + (acc.y * acc.y) + (acc.z * acc.z));
             
@@ -82,3 +86,14 @@ void pedometer_reset_steps(void)
 {
     step_count = 0;
 }
+
+esp_err_t pedometer_get_latest_acc(qmi8658_acc_t *acc)
+{
+    if (!acc) return ESP_ERR_INVALID_ARG;
+    if (!s_acc_valid) {
+        return qmi8658_read_acc(acc);
+    }
+    *acc = s_latest_acc;
+    return ESP_OK;
+}
+

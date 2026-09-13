@@ -42,6 +42,7 @@ extern "C" {
 extern "C" {
 #include "ble_manager.h"
 #include "wifi_manager.h"
+#include "esp_wifi.h"
 #include "bsp/esp32_s3_touch_amoled_2_06.h"
 }
 
@@ -169,6 +170,9 @@ extern "C" void app_main(void)
     display_manager_init();
     
     display_manager_set_wake_cb([]() {
+        if (wifi_manager_is_active()) {
+            esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+        }
         if (bsp_display_lock(1000)) {
             lv_disp_trig_activity(NULL);
             AppLockscreen::show_again();
@@ -177,6 +181,9 @@ extern "C" void app_main(void)
     });
 
     display_manager_set_sleep_cb([]() {
+        if (wifi_manager_is_active()) {
+            esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
+        }
         if (bsp_display_lock(1000)) {
             AppMediaPlayer::force_close();
             bsp_display_unlock();

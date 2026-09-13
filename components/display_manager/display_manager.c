@@ -37,7 +37,7 @@ static void (*wake_cb)(void) = NULL;
 static void (*sleep_cb)(void) = NULL;
 static TickType_t s_last_sleep_tick = 0;
 #if CONFIG_PM_ENABLE
-static esp_pm_lock_handle_t s_no_ls_lock = NULL;
+static esp_pm_lock_handle_t s_cpu_max_lock = NULL;
 #endif
 
 static void display_turn_off_internal(void) {
@@ -62,10 +62,10 @@ static void display_turn_off_internal(void) {
     bsp_display_sleep();
     bsp_display_brightness_set(0);
 
-    // 3. Allow automatic light sleep while screen is off
+    // 3. Drop CPU frequency to 80MHz while screen is off to save power
 #if CONFIG_PM_ENABLE
-    if (s_no_ls_lock) {
-        (void)esp_pm_lock_release(s_no_ls_lock);
+    if (s_cpu_max_lock) {
+        (void)esp_pm_lock_release(s_cpu_max_lock);
     }
 #endif
     display_on = false;
@@ -82,10 +82,10 @@ void display_manager_turn_on(void) {
         is_waking = true;
         ESP_LOGI(TAG, "Turning display on (Wake Panel + Resume LVGL)");
         
-        // 1. Prevent light sleep while actively displaying UI
+        // 1. Boost CPU to 240MHz immediately for 60fps UI
 #if CONFIG_PM_ENABLE
-        if (s_no_ls_lock) {
-            (void)esp_pm_lock_acquire(s_no_ls_lock);
+        if (s_cpu_max_lock) {
+            (void)esp_pm_lock_acquire(s_cpu_max_lock);
         }
 #endif
         // 2. Wake AMOLED panel from sleep (0x11 + 0x29)
@@ -176,13 +176,9 @@ static void display_manager_task(void *arg) {
 void display_manager_init(void) {
     timeout_ms = 5000;
 
-    /*
-     * NOTE: Do NOT call gpio_config() on TOUCH_INT_PIN here!
-     * The BSP touch driver (FT5x06) already configures GPIO_38.
-     * Reconfiguring it would break touch input for LVGL.
-     */
-
     bsp_display_brightness_set(current_brightness);
+
+    display_manager_pm_early_init();
 
     xTaskCreate(display_manager_task, "display_mgr", 4000, NULL, 4, NULL);
 }
@@ -190,13 +186,23 @@ void display_manager_init(void) {
 void display_manager_pm_early_init(void)
 {
 #if CONFIG_PM_ENABLE
-    if (!s_no_ls_lock) {
-        (void)esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "display", &s_no_ls_lock);
+    esp_pm_config_t pm_config = {
+        .max_freq_mhz = 240,
+        .min_freq_mhz = 80,
+        .light_sleep_enable = false // Keep false for guaranteed Octal PSRAM & display stability
+    };
+    esp_err_t err = esp_pm_configure(&pm_config);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "PM DFS active: 240MHz (Active UI) <-> 80MHz (Screen Sleep)");
+    } else {
+        ESP_LOGW(TAG, "Failed to configure PM: %s", esp_err_to_name(err));
     }
-    if (s_no_ls_lock) {
-        (void)esp_pm_lock_acquire(s_no_ls_lock);
+
+    if (!s_cpu_max_lock) {
+        (void)esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "disp_cpu", &s_cpu_max_lock);
     }
-#else
-    (void)0;
+    if (s_cpu_max_lock) {
+        (void)esp_pm_lock_acquire(s_cpu_max_lock);
+    }
 #endif
 }

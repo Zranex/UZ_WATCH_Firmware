@@ -83,11 +83,11 @@ namespace esp_brookesia::apps {
         lv_obj_t * dropdown = (lv_obj_t *)lv_event_get_target(e);
         uint16_t opt = lv_dropdown_get_selected(dropdown);
         
-        uint32_t ms = 30000;
+        uint32_t ms = 5000;
         switch(opt) {
-            case 0: ms = 15000; break;
-            case 1: ms = 30000; break;
-            case 2: ms = 60000; break;
+            case 0: ms = 5000; break;
+            case 1: ms = 10000; break;
+            case 2: ms = 30000; break;
             case 3: ms = 0xFFFFFFFF; break; // Never
         }
         display_manager_set_timeout(ms);
@@ -287,13 +287,13 @@ namespace esp_brookesia::apps {
         lv_obj_set_style_text_color(label_to, lv_color_hex(0xFFFFFF), 0);
 
         lv_obj_t * dd = lv_dropdown_create(tab_disp);
-        lv_dropdown_set_options(dd, "15 Saniye\n30 Saniye\n1 Dakika\nHicbir Zaman");
+        lv_dropdown_set_options(dd, "5 Saniye (Eko)\n10 Saniye\n30 Saniye\nHicbir Zaman");
         lv_obj_set_width(dd, LV_PCT(100));
         
         uint32_t current_to = display_manager_get_timeout();
-        if (current_to <= 15000) lv_dropdown_set_selected(dd, 0);
-        else if (current_to <= 30000) lv_dropdown_set_selected(dd, 1);
-        else if (current_to <= 60000) lv_dropdown_set_selected(dd, 2);
+        if (current_to <= 5000) lv_dropdown_set_selected(dd, 0);
+        else if (current_to <= 10000) lv_dropdown_set_selected(dd, 1);
+        else if (current_to <= 30000) lv_dropdown_set_selected(dd, 2);
         else lv_dropdown_set_selected(dd, 3);
         lv_obj_add_event_cb(dd, timeout_dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
 

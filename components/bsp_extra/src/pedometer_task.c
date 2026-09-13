@@ -11,7 +11,7 @@ static const char *TAG = "pedometer_task";
 static volatile uint32_t step_count = 0;
 
 // Algorithm parameters
-#define PEDOMETER_TASK_DELAY_MS 20      // 50 Hz sampling rate
+#define PEDOMETER_TASK_DELAY_MS 50      // 20 Hz sampling rate (Saves 60% I2C power, plenty fast for walking)
 #define PEAK_THRESHOLD 1.2f             // 1.2 G to trigger a step (Earth gravity is 1.0 G)
 #define COOLDOWN_MS 300                 // Minimum time between steps
 

@@ -91,8 +91,8 @@ static void imu_task(void *pvParameter) {
             }
         }
         
-        // Low power delay: 250ms when screen off, 150ms when screen on
-        vTaskDelay(pdMS_TO_TICKS(is_display_on ? 150 : 250));
+        // Low power delay: 350ms when screen off, 150ms when screen on
+        vTaskDelay(pdMS_TO_TICKS(is_display_on ? 150 : 350));
     }
 }
 
@@ -299,6 +299,14 @@ extern "C" void app_main(void)
 
     ESP_UTILS_LOGI("UZ WATCH v3 - Sistem Hazir!");
     ble_manager_init();
+
+    // Wi-Fi otomatik baglanti: Acilistan 1.5 saniye sonra arka planda TurkTelekom'a baglan
+    xTaskCreate([](void*) {
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        ESP_UTILS_LOGI("Boot auto-starting Wi-Fi...");
+        wifi_manager_start();
+        vTaskDelete(NULL);
+    }, "wifi_boot", 3072, NULL, 3, NULL);
 }
 
 

@@ -20,6 +20,9 @@ esp_err_t wifi_manager_stop(void);
 // Check if WiFi hardware is currently active
 bool wifi_manager_is_active(void);
 
+// Check if WiFi is connected and has an IP address
+bool wifi_manager_is_connected(void);
+
 // Start scanning for Wi-Fi networks (non-blocking)
 esp_err_t wifi_manager_scan(void);
 
@@ -31,6 +34,9 @@ int wifi_manager_get_scanned_networks(char ssids[][33], int max_networks);
 
 // Get the current IP address as string (e.g. "192.168.1.100")
 void wifi_manager_get_ip(char* buf);
+
+// Get the count of discovered APs from last scan
+int wifi_manager_get_ap_count(void);
 
 typedef enum {
     WIFI_STATE_OFF,

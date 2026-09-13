@@ -386,6 +386,64 @@ esp_err_t bsp_display_backlight_on(void)
     ESP_LOGI(TAG, "Backlight on");
     return bsp_display_brightness_set(100);
 }
+
+esp_err_t bsp_display_sleep(void)
+{
+    if (panel_handle == NULL || io_handle == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    ESP_LOGI(TAG, "Entering AMOLED Ultra-Low-Power Sleep (0x28 + 0x10)");
+    
+    // 1. Turn display off (0x28)
+    esp_lcd_panel_disp_on_off(panel_handle, false);
+    
+    // 2. Send Sleep In (0x10) command via QSPI
+    uint32_t lcd_cmd = 0x10;
+    lcd_cmd &= 0xff;
+    lcd_cmd <<= 8;
+    lcd_cmd |= 0x02 << 24;
+    esp_lcd_panel_io_tx_param(io_handle, lcd_cmd, NULL, 0);
+    
+    return ESP_OK;
+}
+
+esp_err_t bsp_display_wake(void)
+{
+    if (panel_handle == NULL || io_handle == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    ESP_LOGI(TAG, "Waking up AMOLED from Sleep (0x11 + 0x29)");
+    
+    // 1. Send Sleep Out (0x11) command via QSPI
+    uint32_t lcd_cmd = 0x11;
+    lcd_cmd &= 0xff;
+    lcd_cmd <<= 8;
+    lcd_cmd |= 0x02 << 24;
+    esp_lcd_panel_io_tx_param(io_handle, lcd_cmd, NULL, 0);
+    
+    // 2. SH8601 requires 120ms after Sleep Out before Display On
+    vTaskDelay(pdMS_TO_TICKS(120));
+    
+    // 3. Turn display back on (0x29)
+    esp_lcd_panel_disp_on_off(panel_handle, true);
+    
+    return ESP_OK;
+}
+
+void bsp_audio_power_amp_enable(bool enable)
+{
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << BSP_POWER_AMP_IO),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io_conf);
+    gpio_set_level(BSP_POWER_AMP_IO, enable ? 1 : 0);
+    ESP_LOGI(TAG, "Audio Power Amp: %s", enable ? "ON" : "OFF");
+}
+
 #if LVGL_VERSION_MAJOR >= 9
 static void rounder_event_cb(lv_event_t *e)
 {
@@ -497,20 +555,17 @@ esp_err_t bsp_touch_new(const bsp_touch_config_t *config, esp_lcd_touch_handle_t
     return esp_lcd_touch_new_i2c_ft5x06(tp_io_handle, &tp_cfg, ret_touch);
 }
 
+#define BSP_DISPLAY_FLUSH_LINES 30
+
 static lv_display_t *bsp_display_lcd_init()
 {
     const bsp_display_config_t disp_config = {
-        .max_transfer_sz = BSP_LCD_H_RES * BSP_LCD_V_RES * 2, // 410 * 502 * 2
+        .max_transfer_sz = BSP_LCD_H_RES * BSP_DISPLAY_FLUSH_LINES * sizeof(lv_color_t), // 410 * 30 * 2 = 24,600 bytes
     };
 
     BSP_ERROR_CHECK_RETURN_NULL(bsp_display_new(&disp_config, &panel_handle, &io_handle));
 
-    int buffer_size = 0;
-#if CONFIG_BSP_DISPLAY_LVGL_AVOID_TEAR
-    buffer_size = BSP_LCD_H_RES * BSP_LCD_V_RES;
-#else
-    buffer_size = BSP_LCD_H_RES * LVGL_BUFFER_HEIGHT;
-#endif /* CONFIG_BSP_DISPLAY_LVGL_AVOID_TEAR */
+    int buffer_size = BSP_LCD_H_RES * BSP_DISPLAY_FLUSH_LINES;
 
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = io_handle,
@@ -534,11 +589,6 @@ static lv_display_t *bsp_display_lcd_init()
             .sw_rotate = false,
             .buff_dma = false,
             .buff_spiram = true,
-#if CONFIG_BSP_DISPLAY_LVGL_FULL_REFRESH
-            .full_refresh = 1,
-#elif CONFIG_BSP_DISPLAY_LVGL_DIRECT_MODE
-            .direct_mode = 1,
-#endif
 #if LVGL_VERSION_MAJOR >= 9
             .swap_bytes = true,
 #endif

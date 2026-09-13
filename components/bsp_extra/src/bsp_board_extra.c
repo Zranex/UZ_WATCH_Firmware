@@ -83,35 +83,51 @@ esp_err_t bsp_battery_init(void) {
     esp_err_t ret = i2c_master_bus_add_device(bus_handle, &dev_config, &axp_dev_handle);
     if(ret != ESP_OK) return ret;
 
-    // Optional: Enable ADC channels if they are disabled by default
-    // For AXP2101, usually register 0x27 enables ADCs. We just try to read 0xA4 first.
+    // AXP2101 Power & ADC configuration:
+    // 1. Register 0x30 (ADC Channel Control):
+    // Enable Batt (bit 5), Sys (bit 4), VBUS (bit 3), Temp (bit 2), Fuel gauge (bit 0), DISABLE TS Pin (bit 1 = 0)
+    uint8_t reg_0x30_data[2] = {0x30, 0x3D};
+    (void)i2c_master_transmit(axp_dev_handle, reg_0x30_data, 2, I2C_MASTER_TIMEOUT_MS);
+
+    // 2. Register 0x62 (ICC Charge Set):
+    // Set 400mA fast charge for 500mAh LiPo (0x08 = 400mA)
+    uint8_t reg_0x62_data[2] = {0x62, 0x08};
+    (void)i2c_master_transmit(axp_dev_handle, reg_0x62_data, 2, I2C_MASTER_TIMEOUT_MS);
+
+    ESP_LOGI(TAG, "AXP2101 PMIC configured (ADC active, TS disabled, 400mA charging)");
     return ESP_OK;
 }
 
 int bsp_battery_get_percent(void) {
     if (!axp_dev_handle) return 100;
     
+    static int last_valid_percent = 85;
     uint8_t reg = 0xA4; // Battery percentage register
     uint8_t percent = 0;
     esp_err_t ret = i2c_master_transmit_receive(axp_dev_handle, &reg, 1, &percent, 1, I2C_MASTER_TIMEOUT_MS);
     if (ret == ESP_OK) {
-        // AXP2101 percent register has range 0-100, but MSB might be valid flag.
-        // According to datasheet, bit 7 is valid flag? 
-        // Just return percent & 0x7F to be safe.
-        return percent & 0x7F;
+        // AXP2101 Reg 0xA4: Bit 7 is "Data Valid" flag (1 = valid, 0 = calculating)
+        if (percent & 0x80) {
+            int val = percent & 0x7F;
+            if (val >= 0 && val <= 100) {
+                last_valid_percent = val;
+                return val;
+            }
+        }
+        // If calculation in progress, return the last known good reading
+        return last_valid_percent;
     }
     return -1;
 }
 
 bool bsp_battery_is_charging(void) {
     if (!axp_dev_handle) return false;
-    uint8_t reg = 0x00; // Power status 1
-    uint8_t status = 0;
-    esp_err_t ret = i2c_master_transmit_receive(axp_dev_handle, &reg, 1, &status, 1, I2C_MASTER_TIMEOUT_MS);
+    uint8_t reg = 0x01; // Power status 2 (AXP2101)
+    uint8_t status2 = 0;
+    esp_err_t ret = i2c_master_transmit_receive(axp_dev_handle, &reg, 1, &status2, 1, I2C_MASTER_TIMEOUT_MS);
     if (ret == ESP_OK) {
-        // AXP2101 status 1 register: 
-        // 0x00: Bit 5 = VBUS presence status (1 = present, meaning plugged in)
-        return (status & (1 << 5)) != 0;
+        // AXP2101 Reg 0x01 Bits [6:5]: 01 = Charging
+        return ((status2 >> 5) & 0x03) == 0x01;
     }
     return false;
 }

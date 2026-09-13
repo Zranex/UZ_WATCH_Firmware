@@ -15,27 +15,28 @@ constexpr StatusBar::AreaData STYLESHEET_410_502_DARK_STATUS_BAR_AREA_DATA(int w
     return {
         .size = gui::StyleSize::RECT_PERCENT(w_percent, 100),
         .layout_column_align = align,
-        .layout_column_start_offset = 26,
-        .layout_column_pad = 4,
+        .layout_column_start_offset = 24,
+        .layout_column_pad = 6,
     };
 }
 
 constexpr StatusBar::Data STYLESHEET_410_502_DARK_STATUS_BAR_DATA = {
     .main = {
-        .size = gui::StyleSize::RECT_W_PERCENT(100, 40),
-        .background_color = gui::StyleColor::COLOR(0x202020),
-        .text_font = gui::StyleFont::SIZE(20),
-        .text_color = gui::StyleColor::COLOR(0xAFAFAF),
+        .size = gui::StyleSize::RECT_W_PERCENT(100, 36),
+        .background_color = gui::StyleColor::COLOR(0x000000),
+        .text_font = gui::StyleFont::SIZE(18),
+        .text_color = gui::StyleColor::COLOR(0xFFFFFF),
     },
     .area = {
-        .num = 1,
+        .num = 2,
         .data = {
-            STYLESHEET_410_502_DARK_STATUS_BAR_AREA_DATA(80, StatusBar::AreaAlign::CENTER),            
+            STYLESHEET_410_502_DARK_STATUS_BAR_AREA_DATA(50, StatusBar::AreaAlign::START), // Left: Clock
+            STYLESHEET_410_502_DARK_STATUS_BAR_AREA_DATA(50, StatusBar::AreaAlign::END),   // Right: Wi-Fi & Battery
         },
     },
-    .icon_common_size = gui::StyleSize::SQUARE(24),
+    .icon_common_size = gui::StyleSize::SQUARE(22),
     .battery = {
-        .area_index = 0,
+        .area_index = 1,
         .icon_data = {
             .icon = {
                 .image_num = 5,
@@ -50,7 +51,7 @@ constexpr StatusBar::Data STYLESHEET_410_502_DARK_STATUS_BAR_DATA = {
         },
     },
     .wifi = {
-        .area_index = 0,
+        .area_index = 1,
         .icon_data = {
             .icon = {
                 .image_num = 4,

@@ -43,24 +43,31 @@ static void display_turn_off_internal(void) {
     if (!display_on) {
         return;
     }
-    ESP_LOGI(TAG, "Turning display off");
+    ESP_LOGI(TAG, "Turning display off (AMOLED Sleep + LVGL Pause)");
     
-    // We do NOT stop LVGL or disable indev.
-    // This allows LVGL to natively detect the next touch to wake up!
-    
-    // Turn off brightness (AMOLED — no backlight, brightness controls panel)
+    if (sleep_cb) {
+        sleep_cb();
+    }
+
+    // 1. Stop LVGL task to eliminate all rendering & QSPI DMA traffic
+    if (lvgl_port_lock(200)) {
+        lvgl_port_stop();
+        lvgl_port_unlock();
+    } else {
+        lvgl_port_stop();
+    }
+
+    // 2. Put panel into ultra-low-power sleep (0x28 + 0x10)
+    bsp_display_sleep();
     bsp_display_brightness_set(0);
-    // Allow automatic light sleep while the screen is off
+
+    // 3. Allow automatic light sleep while screen is off
 #if CONFIG_PM_ENABLE
     if (s_no_ls_lock) {
         (void)esp_pm_lock_release(s_no_ls_lock);
     }
 #endif
     display_on = false;
-    
-    if (sleep_cb) {
-        sleep_cb();
-    }
 }
 
 void display_manager_turn_off(void) {
@@ -68,23 +75,33 @@ void display_manager_turn_off(void) {
 }
 
 void display_manager_turn_on(void) {
-    if (!display_on) {
-        ESP_LOGI(TAG, "Turning display on");
-        // Restore brightness
+    static bool is_waking = false;
+    if (!display_on && !is_waking) {
+        is_waking = true;
+        ESP_LOGI(TAG, "Turning display on (Wake Panel + Resume LVGL)");
+        
+        // 1. Prevent light sleep while actively displaying UI
+#if CONFIG_PM_ENABLE
+        if (s_no_ls_lock) {
+            (void)esp_pm_lock_acquire(s_no_ls_lock);
+        }
+#endif
+        // 2. Wake AMOLED panel from sleep (0x11 + 0x29)
+        bsp_display_wake();
+        
+        // 3. Resume LVGL task
+        lvgl_port_resume();
+        
+        // 4. Restore brightness
         bsp_display_brightness_set(current_brightness);
         
+        display_on = true;
+
         if (wake_cb) {
             wake_cb(); // This will trigger AppLockscreen::show_again()
         }
-        
-        display_on = true;
+        is_waking = false;
     }
-    // Prevent light sleep while actively displaying UI
-#if CONFIG_PM_ENABLE
-    if (s_no_ls_lock) {
-        (void)esp_pm_lock_acquire(s_no_ls_lock);
-    }
-#endif
     display_manager_reset_timer();
 }
 
@@ -93,12 +110,15 @@ bool display_manager_is_on(void) {
 }
 
 void display_manager_reset_timer(void) {
-    lv_disp_trig_activity(NULL);
+    if (display_on && lvgl_port_lock(10)) {
+        lv_disp_trig_activity(NULL);
+        lvgl_port_unlock();
+    }
 }
 
 void display_manager_set_timeout(uint32_t t_ms) {
     timeout_ms = t_ms;
-    display_manager_reset_timer(); // reset timer when setting changes
+    display_manager_reset_timer();
 }
 
 uint32_t display_manager_get_timeout(void) {
@@ -126,34 +146,31 @@ uint8_t display_manager_get_brightness(void) {
 }
 
 static void display_manager_task(void *arg) {
-    ESP_LOGI(TAG, "Display manager task started (native LVGL wake)");
+    ESP_LOGI(TAG, "Display manager task started (Deep Power Optimization)");
     while (1) {
-        uint32_t inactive = 0;
-        if (lvgl_port_lock(0)) {
-            inactive = lv_disp_get_inactive_time(NULL);
-            lvgl_port_unlock();
-        }
-        
         if (display_on) {
+            uint32_t inactive = 0;
+            if (lvgl_port_lock(50)) {
+                inactive = lv_disp_get_inactive_time(NULL);
+                lvgl_port_unlock();
+            }
             if (inactive >= timeout_ms) {
                 display_turn_off_internal();
             }
+            vTaskDelay(pdMS_TO_TICKS(100));
         } else {
-            // Screen is off — LVGL is still running and polling touch
-            if (inactive < timeout_ms) {
-                display_manager_turn_on();
-            } else if (gpio_get_level(TOUCH_INT_PIN) == 0) {
-                // Hardware interrupt from touch controller!
+            // Screen is OFF: LVGL paused. Check touch hardware interrupt pin (active LOW)
+            if (gpio_get_level(TOUCH_INT_PIN) == 0) {
                 ESP_LOGI(TAG, "Touch INT detected! Waking up display.");
                 display_manager_turn_on();
             }
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
-        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 
 void display_manager_init(void) {
-    timeout_ms = 10000;
+    timeout_ms = 5000;
 
     /*
      * NOTE: Do NOT call gpio_config() on TOUCH_INT_PIN here!

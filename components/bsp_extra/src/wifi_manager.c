@@ -52,15 +52,23 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                     int32_t event_id, void* event_data)
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        ESP_LOGI(TAG, "Wi-Fi started");
+        ESP_LOGI(TAG, "Wi-Fi started (STA_START)");
         current_state = WIFI_STATE_IDLE;
-        if (wifi_active) esp_wifi_connect(); // Try to auto-connect to saved network on start
+        // Start non-blocking network scan immediately
+        wifi_manager_scan();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGI(TAG, "Wi-Fi disconnected");
-        if (wifi_active) {
-            current_state = WIFI_STATE_CONNECTING;
-            ESP_LOGI(TAG, "Auto-reconnecting...");
-            esp_wifi_connect();
+        if (current_state == WIFI_STATE_CONNECTING) {
+            static int s_retry_count = 0;
+            if (s_retry_count < 3) {
+                s_retry_count++;
+                ESP_LOGI(TAG, "Reconnecting attempt %d...", s_retry_count);
+                esp_wifi_connect();
+            } else {
+                s_retry_count = 0;
+                current_state = WIFI_STATE_IDLE;
+                ESP_LOGW(TAG, "Connection attempts exhausted, returned to IDLE");
+            }
         } else {
             current_state = WIFI_STATE_IDLE;
         }
@@ -142,6 +150,18 @@ esp_err_t wifi_manager_start(void)
     ESP_LOGW(TAG, "PSRAM Free: %u, Largest: %u", heap_caps_get_free_size(MALLOC_CAP_SPIRAM), heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    // Wearable Ultra-low-memory Wi-Fi profile (saves ~50KB internal SRAM)
+    cfg.static_rx_buf_num = 4;
+    cfg.dynamic_rx_buf_num = 8;
+    cfg.tx_buf_type = 1; // Dynamic TX buffers
+    cfg.static_tx_buf_num = 0;
+    cfg.dynamic_tx_buf_num = 8;
+    cfg.cache_tx_buf_num = 4;
+    cfg.mgmt_sbuf_num = 6;
+    cfg.ampdu_rx_enable = 0;
+    cfg.ampdu_tx_enable = 0;
+    cfg.rx_ba_win = 4;
+
     esp_err_t err = esp_wifi_init(&cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "WiFi init failed: %s", esp_err_to_name(err));
@@ -161,12 +181,19 @@ esp_err_t wifi_manager_start(void)
                                                         NULL,
                                                         &instance_got_ip));
 
+    wifi_active = true;
+    current_state = WIFI_STATE_IDLE;
+
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
-    wifi_active = true;
-    ESP_LOGI(TAG, "WiFi hardware started");
+    // 1. Cap Max TX power to 13 dBm (52 in 0.25 dBm units) to eliminate brownouts & white screen
+    esp_wifi_set_max_tx_power(52);
+
+    // 2. Enable Modem-Sleep power saving (radio sleeps between beacons)
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_MIN_MODEM));
+
+    ESP_LOGI(TAG, "WiFi hardware started (Safe TX Power 13dBm + Modem Sleep)");
     return ESP_OK;
 }
 
@@ -181,6 +208,7 @@ esp_err_t wifi_manager_stop(void)
         esp_sntp_stop();
     }
 
+    esp_wifi_scan_stop();
     esp_wifi_disconnect();
     esp_wifi_stop();
 
@@ -207,18 +235,31 @@ bool wifi_manager_is_active(void)
     return wifi_active;
 }
 
-static void wifi_scan_task_func(void* arg) {
-    esp_wifi_scan_start(NULL, true);
-    vTaskDelete(NULL);
+int wifi_manager_get_ap_count(void)
+{
+    return ap_count;
 }
 
 esp_err_t wifi_manager_scan(void)
 {
     if (!wifi_active) return ESP_ERR_WIFI_NOT_STARTED;
     
-    xTaskCreate(wifi_scan_task_func, "wifi_scan", 4096, NULL, 5, NULL);
-    
-    return ESP_OK;
+    wifi_scan_config_t scan_cfg = {
+        .ssid = NULL,
+        .bssid = NULL,
+        .channel = 0,
+        .show_hidden = false,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time = {
+            .active = {
+                .min = 100,
+                .max = 200
+            }
+        }
+    };
+    esp_err_t err = esp_wifi_scan_start(&scan_cfg, false);
+    ESP_LOGI(TAG, "wifi_manager_scan non-blocking start -> %s", esp_err_to_name(err));
+    return err;
 }
 
 int wifi_manager_get_scanned_networks(char ssids[][33], int max_networks)

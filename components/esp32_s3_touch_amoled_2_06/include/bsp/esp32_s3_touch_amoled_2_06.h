@@ -315,6 +315,22 @@ void bsp_display_unlock(void);
 void bsp_display_rotate(lv_display_t *disp, lv_disp_rotation_t rotation);
 #endif // BSP_CONFIG_NO_GRAPHIC_LIB == 0
 
+/**
+ * @brief Put display panel into ultra-low-power sleep mode (0x28 + 0x10)
+ */
+esp_err_t bsp_display_sleep(void);
+
+/**
+ * @brief Wake display panel from sleep mode (0x11 + 0x29)
+ */
+esp_err_t bsp_display_wake(void);
+
+/**
+ * @brief Enable or disable the audio power amplifier (GPIO 46) to save 20mA when silent
+ */
+void bsp_audio_power_amp_enable(bool enable);
+
+
 #ifdef __cplusplus
 }
 #endif

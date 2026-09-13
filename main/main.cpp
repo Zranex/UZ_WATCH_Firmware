@@ -62,7 +62,10 @@ esp_codec_dev_handle_t spk_codec_dev = NULL;
     }
 
 static void imu_task(void *pvParameter) {
+    static bool was_tilted = false;
     while(1) {
+        bool is_display_on = display_manager_is_on();
+        
         qmi8658_acc_t acc;
         if (qmi8658_read_acc(&acc) == ESP_OK) {
             float bx, by, bz;
@@ -73,21 +76,23 @@ static void imu_task(void *pvParameter) {
             float dz = acc.z - bz;
             float dist_sq = dx*dx + dy*dy + dz*dz;
             
+            // Edge-triggered: Only wake when transitioning from NOT tilted to TILTED
             if (dist_sq < 0.25f) {
-                if (!display_manager_is_on()) {
-                    display_manager_turn_on();
-                    ESP_UTILS_LOGI("Wrist tilt detected! Display ON.");
+                if (!was_tilted) {
+                    was_tilted = true;
+                    if (!is_display_on) {
+                        display_manager_turn_on();
+                        ESP_UTILS_LOGI("Wrist tilt edge detected! Display ON.");
+                    }
                 }
-                
-                // Keep the display awake as long as we are looking at it
-                if (bsp_display_lock(1000)) {
-                    lv_disp_trig_activity(NULL);
-                    bsp_display_unlock();
-                }
+            } else if (dist_sq > 0.40f) {
+                // Hysteresis: arm has moved away from viewing position
+                was_tilted = false;
             }
         }
         
-        vTaskDelay(pdMS_TO_TICKS(100));
+        // Low power delay: 250ms when screen off, 150ms when screen on
+        vTaskDelay(pdMS_TO_TICKS(is_display_on ? 150 : 250));
     }
 }
 
@@ -107,8 +112,8 @@ extern "C" void app_main(void)
     ESP_LOGW(ESP_UTILS_LOG_TAG, "PSRAM Free: %u, Largest: %u", heap_caps_get_free_size(MALLOC_CAP_SPIRAM), heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
     ESP_LOGW(ESP_UTILS_LOG_TAG, "---------------------------------");
 
-    /* 2. Parlaklik */
-    bsp_display_brightness_set(100);
+    // Power Saving: Baslangic parlakligi %50
+    bsp_display_brightness_set(50);
 
     /* 3. Ekstra donanim (RTC vb.) — ekrandan SONRA */
     bsp_extra_init();
@@ -130,6 +135,7 @@ extern "C" void app_main(void)
         if(spk_codec_dev) {
             ESP_UTILS_LOGI("Speaker initialized successfully!");
             esp_codec_dev_set_out_vol(spk_codec_dev, 70); // Set default volume to 70%
+            bsp_audio_power_amp_enable(false); // Shut off PA when silent to save 20mA
         } else {
             ESP_UTILS_LOGE("Failed to initialize speaker codec!");
         }
@@ -140,12 +146,12 @@ extern "C" void app_main(void)
     struct tm timeinfo;
     rtc_get_time(&timeinfo);
     if (timeinfo.tm_year < 120) {
-        timeinfo.tm_year = 127;
-        timeinfo.tm_mon = 4;
-        timeinfo.tm_mday = 24;
-        timeinfo.tm_hour = 20;
-        timeinfo.tm_min = 14;
-        timeinfo.tm_sec = 34;
+        timeinfo.tm_year = 126; // 2026
+        timeinfo.tm_mon = 8;    // September
+        timeinfo.tm_mday = 13;
+        timeinfo.tm_hour = 18;
+        timeinfo.tm_min = 35;
+        timeinfo.tm_sec = 0;
         rtc_set_time(&timeinfo);
     }
 
@@ -241,18 +247,43 @@ extern "C" void app_main(void)
         /* Notifications UI Init */
         AppNotifications::init();
 
-        /* 8. Saat guncelleme zamanlayicisi */
-        lv_timer_create([](lv_timer_t* t) {
+        /* 8. Durum Cubugu Guncelleme (Saat, Wi-Fi, Pil) */
+        // Acilista aninda ilk guncelleme (0. saniye)
+        {
             time_t now;
             struct tm timeinfo;
+            time(&now);
+            localtime_r(&now, &timeinfo);
+            phone->getDisplay().getStatusBar()->setClock(timeinfo.tm_hour, timeinfo.tm_min);
+            StatusBar::WifiState ws = StatusBar::WifiState::DISCONNECTED;
+            if (wifi_manager_is_connected()) ws = StatusBar::WifiState::SIGNAL_3;
+            else if (wifi_manager_is_active()) ws = StatusBar::WifiState::SIGNAL_1;
+            phone->getDisplay().getStatusBar()->setWifiIconState(ws);
+            int percent = bsp_battery_get_percent();
+            bool charging = bsp_battery_is_charging();
+            if (percent >= 0 && percent <= 100) {
+                phone->getDisplay().getStatusBar()->setBatteryPercent(charging, percent);
+            }
+        }
+
+        // Periyodik guncelleme (Saat her saniye, Wi-Fi 2s, Pil 5s)
+        lv_timer_create([](lv_timer_t* t) {
             Phone* phone = (Phone*)t->user_data;
+            time_t now;
+            struct tm timeinfo;
             time(&now);
             localtime_r(&now, &timeinfo);
             phone->getDisplay().getStatusBar()->setClock(timeinfo.tm_hour, timeinfo.tm_min);
             
-            // Battery Update (her 10 saniyede bir I2C yormamak icin)
+            // Wi-Fi durumu (her saniye kontrol edilir - aninda tepki)
+            StatusBar::WifiState ws = StatusBar::WifiState::DISCONNECTED;
+            if (wifi_manager_is_connected()) ws = StatusBar::WifiState::SIGNAL_3;
+            else if (wifi_manager_is_active()) ws = StatusBar::WifiState::SIGNAL_1;
+            phone->getDisplay().getStatusBar()->setWifiIconState(ws);
+
+            // Pil durumu (her 5 saniyede bir)
             static int bat_tick = 0;
-            if (++bat_tick >= 10) {
+            if (++bat_tick >= 5) {
                 bat_tick = 0;
                 int percent = bsp_battery_get_percent();
                 bool charging = bsp_battery_is_charging();

@@ -1,4 +1,4 @@
-﻿#include "app_local_music.hpp"
+#include "app_local_music.hpp"
 extern const lv_image_dsc_t icon_local_music;
 #include "esp_lib_utils.h"
 #include "bsp/esp32_s3_touch_amoled_2_06.h"
@@ -416,11 +416,13 @@ void AppLocalMusic::audio_task(void *pvParameter) {
         
         // Playback loop
         if (app->_is_playing && f && codec_opened) {
+            bsp_audio_power_amp_enable(true);
             size_t read_bytes = fread(buf, 1, CHUNK_SIZE, f);
             if (read_bytes > 0) {
                 esp_codec_dev_write(spk_codec_dev, buf, read_bytes);
             } else {
                 // EOF reached
+                bsp_audio_power_amp_enable(false);
                 if (bsp_display_lock(0)) {
                     app->_is_playing = false;
                     app->update_play_button_text();
@@ -429,7 +431,8 @@ void AppLocalMusic::audio_task(void *pvParameter) {
                 }
             }
         } else {
-            // Idle or Paused - sleep to avoid CPU spinning
+            // Idle or Paused - sleep to avoid CPU spinning and shut off PA
+            bsp_audio_power_amp_enable(false);
             vTaskDelay(pdMS_TO_TICKS(50));
         }
     }
@@ -437,6 +440,7 @@ void AppLocalMusic::audio_task(void *pvParameter) {
     // Cleanup when app closes
     if (f) fclose(f);
     if (codec_opened) esp_codec_dev_close(spk_codec_dev);
+    bsp_audio_power_amp_enable(false);
     if (buf) free(buf);
     
     app->_audio_task_handle = NULL;

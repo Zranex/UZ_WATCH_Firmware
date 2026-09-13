@@ -28,6 +28,9 @@ esp_err_t rtc_start(void)
         return ret;
     }
 
+    // Immediately sync hardware RTC time to system time at boot
+    rtc_update_task(NULL);
+
     const esp_timer_create_args_t rtc_timer_args = {
         .callback = &rtc_update_task,
         .name = "rtc_timer"

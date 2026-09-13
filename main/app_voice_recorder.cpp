@@ -1,4 +1,4 @@
-﻿#include "app_voice_recorder.hpp"
+#include "app_voice_recorder.hpp"
 extern const lv_image_dsc_t icon_voice_recorder;
 #include "esp_log.h"
 #include <sys/stat.h>
@@ -10,6 +10,7 @@ extern const lv_image_dsc_t icon_voice_recorder;
 
 extern esp_codec_dev_handle_t bsp_audio_codec_microphone_init(void);
 extern esp_codec_dev_handle_t spk_codec_dev;
+extern "C" void bsp_audio_power_amp_enable(bool enable);
 
 AppVoiceRecorder::AppVoiceRecorder() 
     : esp_brookesia::systems::phone::App("Ses Kaydi", &icon_voice_recorder, true),
@@ -24,6 +25,12 @@ bool AppVoiceRecorder::run() {
     _selected_index = -1;
     lv_obj_t* scr = lv_scr_act();
     lv_obj_clean(scr);
+
+    // Ensure recordings directory exists on SD card
+    struct stat st = {0};
+    if (stat("/sdcard/recordings", &st) == -1) {
+        mkdir("/sdcard/recordings", 0755);
+    }
 
     
     // UI: Title
@@ -350,6 +357,7 @@ void AppVoiceRecorder::audio_task(void *pvParameter) {
             };
             
             if (spk_codec_dev) {
+                bsp_audio_power_amp_enable(true);
                 esp_codec_dev_open(spk_codec_dev, &fs);
                 esp_codec_dev_set_out_vol(spk_codec_dev, 70);
                 
@@ -361,6 +369,7 @@ void AppVoiceRecorder::audio_task(void *pvParameter) {
                     vTaskDelay(pdMS_TO_TICKS(10));
                 }
                 esp_codec_dev_close(spk_codec_dev);
+                bsp_audio_power_amp_enable(false);
             }
             fclose(f);
         }

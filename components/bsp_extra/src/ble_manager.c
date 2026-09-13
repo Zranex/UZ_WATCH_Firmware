@@ -1,4 +1,4 @@
-﻿#include "ble_manager.h"
+#include "ble_manager.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "host/ble_hs.h"
@@ -221,11 +221,13 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
         app_notifications_show_system_alert("Telefon Baglantisi Koptu!");
         // -------------------------------
 
-        // Resume advertising
+        // Resume advertising with power-saving 800-1000ms interval
         struct ble_gap_adv_params adv_params;
         memset(&adv_params, 0, sizeof(adv_params));
         adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
         adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+        adv_params.itvl_min = 1280; // 800ms
+        adv_params.itvl_max = 1600; // 1000ms
         uint8_t own_addr_type;
         ble_hs_id_infer_auto(0, &own_addr_type);
         ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER, &adv_params, NULL, NULL);
@@ -269,6 +271,8 @@ static void ble_app_on_sync(void)
     memset(&adv_params, 0, sizeof(adv_params));
     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
     adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+    adv_params.itvl_min = 1280; // 800ms
+    adv_params.itvl_max = 1600; // 1000ms
 
     uint8_t own_addr_type;
     rc = ble_hs_id_infer_auto(0, &own_addr_type);

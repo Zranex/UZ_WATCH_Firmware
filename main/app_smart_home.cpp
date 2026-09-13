@@ -53,30 +53,43 @@ void AppSmartHome::update_wifi_ui() {
 
     bool active = wifi_manager_is_active();
     bool connected = wifi_manager_is_connected();
-    int ap_cnt = wifi_manager_get_ap_count();
+    wifi_state_t state = wifi_manager_get_state();
 
     if (connected) {
         char ip[32] = {0};
         wifi_manager_get_ip(ip);
-        lv_label_set_text(_wifi_status_label, LV_SYMBOL_WIFI " Wi-Fi: Bagli");
+        lv_label_set_text(_wifi_status_label, LV_SYMBOL_WIFI " TurkTelekom");
         lv_obj_set_style_text_color(_wifi_status_label, lv_color_hex(0x4CAF50), 0); // Green
-        lv_label_set_text_fmt(_wifi_ip_label, "IP: %s", strlen(ip) > 0 ? ip : "Bagli");
+        lv_label_set_text_fmt(_wifi_ip_label, "IP: %s (Bagli)", strlen(ip) > 0 ? ip : "Hazir");
+        lv_obj_set_style_text_color(_wifi_ip_label, lv_color_hex(0xCCCCCC), 0);
         lv_label_set_text(_wifi_btn_label, "Kapat");
         if (_wifi_btn) lv_obj_set_style_bg_color(_wifi_btn, lv_color_hex(0xD32F2F), 0); // Red
+    } else if (state == WIFI_STATE_CONNECTING) {
+        lv_label_set_text(_wifi_status_label, LV_SYMBOL_REFRESH " Baglaniyor...");
+        lv_obj_set_style_text_color(_wifi_status_label, lv_color_hex(0xFFA000), 0); // Amber
+        lv_label_set_text(_wifi_ip_label, "TurkTelekom_ZYA41B...");
+        lv_obj_set_style_text_color(_wifi_ip_label, lv_color_hex(0x9E9E9E), 0);
+        lv_label_set_text(_wifi_btn_label, "Kapat");
+        if (_wifi_btn) lv_obj_set_style_bg_color(_wifi_btn, lv_color_hex(0x424242), 0); // Dark Gray
+    } else if (state == WIFI_STATE_FAILED) {
+        lv_label_set_text(_wifi_status_label, LV_SYMBOL_CLOSE " Baglanamadi!");
+        lv_obj_set_style_text_color(_wifi_status_label, lv_color_hex(0xFF5252), 0); // Red
+        lv_label_set_text(_wifi_ip_label, "Aga ulasilamadi. Tekrar dene.");
+        lv_obj_set_style_text_color(_wifi_ip_label, lv_color_hex(0xE57373), 0);
+        lv_label_set_text(_wifi_btn_label, "Tekrar");
+        if (_wifi_btn) lv_obj_set_style_bg_color(_wifi_btn, lv_color_hex(0xFF9800), 0); // Orange / Retry
     } else if (active) {
         lv_label_set_text(_wifi_status_label, LV_SYMBOL_WIFI " Wi-Fi: Acik");
         lv_obj_set_style_text_color(_wifi_status_label, lv_color_hex(0x00E5FF), 0); // Vibrant Cyan
-        if (ap_cnt > 0) {
-            lv_label_set_text_fmt(_wifi_ip_label, "%d Ag Bulundu", ap_cnt);
-        } else {
-            lv_label_set_text(_wifi_ip_label, "Aglar taraniyor...");
-        }
-        lv_label_set_text(_wifi_btn_label, "Kapat");
-        if (_wifi_btn) lv_obj_set_style_bg_color(_wifi_btn, lv_color_hex(0x424242), 0); // Dark Gray
+        lv_label_set_text(_wifi_ip_label, "Baglanmak icin dokunun");
+        lv_obj_set_style_text_color(_wifi_ip_label, lv_color_hex(0x9E9E9E), 0);
+        lv_label_set_text(_wifi_btn_label, "Baglan");
+        if (_wifi_btn) lv_obj_set_style_bg_color(_wifi_btn, lv_color_hex(0x1976D2), 0); // Blue
     } else {
         lv_label_set_text(_wifi_status_label, LV_SYMBOL_WARNING " Wi-Fi: Kapali");
         lv_obj_set_style_text_color(_wifi_status_label, lv_color_hex(0x888888), 0); // Gray
-        lv_label_set_text(_wifi_ip_label, "Acmak icin dokunun");
+        lv_label_set_text(_wifi_ip_label, "Otomatik baglanmak icin acin");
+        lv_obj_set_style_text_color(_wifi_ip_label, lv_color_hex(0x9E9E9E), 0);
         lv_label_set_text(_wifi_btn_label, "Ac");
         if (_wifi_btn) lv_obj_set_style_bg_color(_wifi_btn, lv_color_hex(0x1976D2), 0); // Blue
     }
@@ -86,12 +99,18 @@ void AppSmartHome::on_wifi_toggle_clicked(lv_event_t* e) {
     AppSmartHome* app = (AppSmartHome*)lv_event_get_user_data(e);
     if (!app) return;
 
-    if (wifi_manager_is_active()) {
+    if (!wifi_manager_is_active()) {
+        ESP_UTILS_LOGI("Starting Wi-Fi and auto-connecting to TurkTelekom");
+        wifi_manager_start();
+    } else if (wifi_manager_get_state() == WIFI_STATE_FAILED) {
+        ESP_UTILS_LOGI("Retrying connection to TurkTelekom");
+        wifi_manager_connect_default();
+    } else if (wifi_manager_get_state() == WIFI_STATE_IDLE) {
+        ESP_UTILS_LOGI("Connecting to TurkTelekom from IDLE");
+        wifi_manager_connect_default();
+    } else {
         ESP_UTILS_LOGI("Stopping Wi-Fi from SmartHome UI");
         wifi_manager_stop();
-    } else {
-        ESP_UTILS_LOGI("Starting Wi-Fi from SmartHome UI");
-        wifi_manager_start();
     }
 
     app->update_wifi_ui();

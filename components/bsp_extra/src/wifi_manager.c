@@ -20,6 +20,7 @@ static bool netif_initialized = false;
 static esp_netif_t *sta_netif = NULL;
 static esp_event_handler_instance_t instance_any_id = NULL;
 static esp_event_handler_instance_t instance_got_ip = NULL;
+static int s_retry_count = 0;
 
 static void wifi_print_telemetry(const char* state_name) {
     ESP_LOGI("MEM", "--- WIFI STATE: %s ---", state_name);
@@ -52,34 +53,45 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                     int32_t event_id, void* event_data)
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        ESP_LOGI(TAG, "Wi-Fi started (STA_START)");
-        current_state = WIFI_STATE_IDLE;
-        // Start non-blocking network scan immediately
-        wifi_manager_scan();
+        ESP_LOGI(TAG, "Wi-Fi started (STA_START) -> Auto-connecting to %s...", DEFAULT_WIFI_SSID);
+        current_state = WIFI_STATE_CONNECTING;
+        s_retry_count = 0;
+        esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        ESP_LOGI(TAG, "Wi-Fi disconnected");
+        wifi_event_sta_disconnected_t* disc = (wifi_event_sta_disconnected_t*)event_data;
+        ESP_LOGW(TAG, "Wi-Fi disconnected (reason: %d)", disc ? disc->reason : -1);
         if (current_state == WIFI_STATE_CONNECTING) {
-            static int s_retry_count = 0;
             if (s_retry_count < 3) {
                 s_retry_count++;
-                ESP_LOGI(TAG, "Reconnecting attempt %d...", s_retry_count);
+                ESP_LOGI(TAG, "Reconnecting attempt %d/3...", s_retry_count);
+                vTaskDelay(pdMS_TO_TICKS(300));
                 esp_wifi_connect();
             } else {
                 s_retry_count = 0;
-                current_state = WIFI_STATE_IDLE;
-                ESP_LOGW(TAG, "Connection attempts exhausted, returned to IDLE");
+                current_state = WIFI_STATE_FAILED;
+                ESP_LOGW(TAG, "Connection failed after 3 retries, state = FAILED");
             }
         } else {
             current_state = WIFI_STATE_IDLE;
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
-        ESP_LOGI(TAG, "[WIFI] STA_CONNECTED");
+        ESP_LOGI(TAG, "[WIFI] STA_CONNECTED to %s", DEFAULT_WIFI_SSID);
         current_state = WIFI_STATE_CONNECTED;
+        s_retry_count = 0;
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI(TAG, "[IP] GOT_IP: " IPSTR, IP2STR(&event->ip_info.ip));
         current_state = WIFI_STATE_GOT_IP;
         wifi_print_telemetry("GOT_IP");
+
+        // Sync time via SNTP
+        if (!esp_sntp_enabled()) {
+            esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+            esp_sntp_setservername(0, "pool.ntp.org");
+            sntp_set_time_sync_notification_cb(time_sync_notification_cb);
+            esp_sntp_init();
+            ESP_LOGI(TAG, "SNTP time sync initialized");
+        }
 
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_SCAN_DONE) {
         uint16_t number = MAX_SCAN_NETWORKS;
@@ -185,6 +197,14 @@ esp_err_t wifi_manager_start(void)
     current_state = WIFI_STATE_IDLE;
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+
+    // Pre-load default Wi-Fi network credentials
+    wifi_config_t wifi_config = {0};
+    strncpy((char *)wifi_config.sta.ssid, DEFAULT_WIFI_SSID, sizeof(wifi_config.sta.ssid));
+    strncpy((char *)wifi_config.sta.password, DEFAULT_WIFI_PASSWORD, sizeof(wifi_config.sta.password));
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+
     ESP_ERROR_CHECK(esp_wifi_start());
 
     // 1. Cap Max TX power to 13 dBm (52 in 0.25 dBm units) to eliminate brownouts & white screen
@@ -193,7 +213,7 @@ esp_err_t wifi_manager_start(void)
     // 2. Enable Modem-Sleep power saving (radio sleeps between beacons)
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_MIN_MODEM));
 
-    ESP_LOGI(TAG, "WiFi hardware started (Safe TX Power 13dBm + Modem Sleep)");
+    ESP_LOGI(TAG, "WiFi hardware started & default AP (%s) configured", DEFAULT_WIFI_SSID);
     return ESP_OK;
 }
 
@@ -338,5 +358,36 @@ void wifi_manager_get_ip(char* buf)
         if (esp_netif_get_ip_info(sta_netif, &ip_info) == ESP_OK) {
             sprintf(buf, IPSTR, IP2STR(&ip_info.ip));
         }
+    }
+}
+
+esp_err_t wifi_manager_connect_default(void)
+{
+    if (!wifi_active) {
+        return wifi_manager_start();
+    }
+    s_retry_count = 0;
+    current_state = WIFI_STATE_CONNECTING;
+    wifi_config_t wifi_config = {0};
+    strncpy((char *)wifi_config.sta.ssid, DEFAULT_WIFI_SSID, sizeof(wifi_config.sta.ssid));
+    strncpy((char *)wifi_config.sta.password, DEFAULT_WIFI_PASSWORD, sizeof(wifi_config.sta.password));
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    ESP_LOGI(TAG, "Connecting to default Wi-Fi: %s...", DEFAULT_WIFI_SSID);
+    return esp_wifi_connect();
+}
+
+void wifi_manager_get_ssid(char* buf)
+{
+    if (buf == NULL) return;
+    buf[0] = '\0';
+    if (!wifi_active) return;
+    wifi_config_t conf = {0};
+    if (esp_wifi_get_config(WIFI_IF_STA, &conf) == ESP_OK && strlen((char*)conf.sta.ssid) > 0) {
+        strncpy(buf, (char*)conf.sta.ssid, 32);
+        buf[32] = '\0';
+    } else {
+        strncpy(buf, DEFAULT_WIFI_SSID, 32);
+        buf[32] = '\0';
     }
 }

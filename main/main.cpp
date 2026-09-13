@@ -278,7 +278,7 @@ extern "C" void app_main(void)
             // Wi-Fi durumu (her saniye kontrol edilir - aninda tepki)
             StatusBar::WifiState ws = StatusBar::WifiState::DISCONNECTED;
             if (wifi_manager_is_connected()) ws = StatusBar::WifiState::SIGNAL_3;
-            else if (wifi_manager_is_active()) ws = StatusBar::WifiState::SIGNAL_1;
+            else if (wifi_manager_is_active() && wifi_manager_get_state() != WIFI_STATE_FAILED) ws = StatusBar::WifiState::SIGNAL_1;
             phone->getDisplay().getStatusBar()->setWifiIconState(ws);
 
             // Pil durumu (her 5 saniyede bir)

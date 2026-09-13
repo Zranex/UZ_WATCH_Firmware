@@ -26,8 +26,17 @@ bool wifi_manager_is_connected(void);
 // Start scanning for Wi-Fi networks (non-blocking)
 esp_err_t wifi_manager_scan(void);
 
+#define DEFAULT_WIFI_SSID     "TurkTelekom_ZYA41B"
+#define DEFAULT_WIFI_PASSWORD "cgXy77WVzfYF"
+
+// Connect to default preconfigured network
+esp_err_t wifi_manager_connect_default(void);
+
 // Connect to a Wi-Fi network
 esp_err_t wifi_manager_connect(const char* ssid, const char* password);
+
+// Get current connected or connecting SSID
+void wifi_manager_get_ssid(char* buf);
 
 // Get the latest scanned networks.
 int wifi_manager_get_scanned_networks(char ssids[][33], int max_networks);

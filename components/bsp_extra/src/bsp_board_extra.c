@@ -9,6 +9,7 @@
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "esp_event.h"
+#include "esp_timer.h"
 
 #include "bsp/esp-bsp.h"
 #include "bsp_board_extra.h"
@@ -17,7 +18,7 @@
 #include "qmi8658.h"
 
 #define CONFIG_I2C_MASTER_FREQUENCY 400000
-#define I2C_MASTER_TIMEOUT_MS 1000
+#define I2C_MASTER_TIMEOUT_MS 50
 
 static const char *TAG = "bsp_extra_board";
 
@@ -98,38 +99,53 @@ esp_err_t bsp_battery_init(void) {
     return ESP_OK;
 }
 
+static volatile int s_cached_battery_percent = -1;
+static volatile bool s_cached_battery_charging = false;
+static int64_t s_last_battery_read_us = 0;
+static int64_t s_last_charging_read_us = 0;
+
 int bsp_battery_get_percent(void) {
     if (!axp_dev_handle) return 100;
     
-    static int last_valid_percent = 85;
+    int64_t now = esp_timer_get_time();
+    // Cache for 3 seconds to avoid blocking the LVGL UI thread with frequent I2C traffic
+    if (s_cached_battery_percent >= 0 && (now - s_last_battery_read_us < 3000000)) {
+        return s_cached_battery_percent;
+    }
+
     uint8_t reg = 0xA4; // Battery percentage register
     uint8_t percent = 0;
-    esp_err_t ret = i2c_master_transmit_receive(axp_dev_handle, &reg, 1, &percent, 1, I2C_MASTER_TIMEOUT_MS);
+    esp_err_t ret = i2c_master_transmit_receive(axp_dev_handle, &reg, 1, &percent, 1, 20);
     if (ret == ESP_OK) {
-        // AXP2101 Reg 0xA4: Bit 7 is "Data Valid" flag (1 = valid, 0 = calculating)
-        if (percent & 0x80) {
-            int val = percent & 0x7F;
-            if (val >= 0 && val <= 100) {
-                last_valid_percent = val;
-                return val;
-            }
+        s_last_battery_read_us = now;
+        // On AXP2101, reg 0xA4 provides percentage directly (0-100), or masked with 0x7F
+        int val = (percent <= 100) ? (int)percent : (int)(percent & 0x7F);
+        if (val >= 0 && val <= 100) {
+            s_cached_battery_percent = val;
+            return val;
         }
-        // If calculation in progress, return the last known good reading
-        return last_valid_percent;
     }
-    return -1;
+    return (s_cached_battery_percent >= 0) ? s_cached_battery_percent : 100;
 }
 
 bool bsp_battery_is_charging(void) {
     if (!axp_dev_handle) return false;
+    
+    int64_t now = esp_timer_get_time();
+    if (now - s_last_charging_read_us < 3000000) {
+        return s_cached_battery_charging;
+    }
+
     uint8_t reg = 0x01; // Power status 2 (AXP2101)
     uint8_t status2 = 0;
-    esp_err_t ret = i2c_master_transmit_receive(axp_dev_handle, &reg, 1, &status2, 1, I2C_MASTER_TIMEOUT_MS);
+    esp_err_t ret = i2c_master_transmit_receive(axp_dev_handle, &reg, 1, &status2, 1, 20);
     if (ret == ESP_OK) {
+        s_last_charging_read_us = now;
         // AXP2101 Reg 0x01 Bits [6:5]: 01 = Charging
-        return ((status2 >> 5) & 0x03) == 0x01;
+        s_cached_battery_charging = (((status2 >> 5) & 0x03) == 0x01);
+        return s_cached_battery_charging;
     }
-    return false;
+    return s_cached_battery_charging;
 }
 
 esp_err_t bsp_extra_init(void)

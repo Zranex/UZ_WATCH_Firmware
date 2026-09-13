@@ -306,7 +306,7 @@ extern "C" void app_main(void)
         ESP_UTILS_LOGI("Boot auto-starting Wi-Fi...");
         wifi_manager_start();
         vTaskDelete(NULL);
-    }, "wifi_boot", 3072, NULL, 3, NULL);
+    }, "wifi_boot", 6144, NULL, 3, NULL);
 }
 
 

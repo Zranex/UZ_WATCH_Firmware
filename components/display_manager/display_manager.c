@@ -35,6 +35,7 @@ static bool display_on = true;
 static uint32_t timeout_ms;
 static void (*wake_cb)(void) = NULL;
 static void (*sleep_cb)(void) = NULL;
+static TickType_t s_last_sleep_tick = 0;
 #if CONFIG_PM_ENABLE
 static esp_pm_lock_handle_t s_no_ls_lock = NULL;
 #endif
@@ -50,7 +51,7 @@ static void display_turn_off_internal(void) {
     }
 
     // 1. Stop LVGL task to eliminate all rendering & QSPI DMA traffic
-    if (lvgl_port_lock(200)) {
+    if (lvgl_port_lock(1000)) {
         lvgl_port_stop();
         lvgl_port_unlock();
     } else {
@@ -68,6 +69,7 @@ static void display_turn_off_internal(void) {
     }
 #endif
     display_on = false;
+    s_last_sleep_tick = xTaskGetTickCount();
 }
 
 void display_manager_turn_off(void) {
@@ -160,7 +162,9 @@ static void display_manager_task(void *arg) {
             vTaskDelay(pdMS_TO_TICKS(100));
         } else {
             // Screen is OFF: LVGL paused. Check touch hardware interrupt pin (active LOW)
-            if (gpio_get_level(TOUCH_INT_PIN) == 0) {
+            // Wait at least 600ms after sleep before waking on touch to prevent debounce bouncing
+            TickType_t now_tick = xTaskGetTickCount();
+            if (((now_tick - s_last_sleep_tick) * portTICK_PERIOD_MS > 600) && gpio_get_level(TOUCH_INT_PIN) == 0) {
                 ESP_LOGI(TAG, "Touch INT detected! Waking up display.");
                 display_manager_turn_on();
             }

@@ -10,12 +10,12 @@
 
 namespace esp_brookesia::systems::phone {
 
-constexpr StatusBar::AreaData STYLESHEET_410_502_DARK_STATUS_BAR_AREA_DATA(int w_percent, StatusBar::AreaAlign align)
+constexpr StatusBar::AreaData STYLESHEET_410_502_DARK_STATUS_BAR_AREA_DATA(int w_percent, StatusBar::AreaAlign align, int pad_offset)
 {
     return {
         .size = gui::StyleSize::RECT_PERCENT(w_percent, 100),
         .layout_column_align = align,
-        .layout_column_start_offset = 24,
+        .layout_column_start_offset = pad_offset,
         .layout_column_pad = 6,
     };
 }
@@ -30,8 +30,8 @@ constexpr StatusBar::Data STYLESHEET_410_502_DARK_STATUS_BAR_DATA = {
     .area = {
         .num = 2,
         .data = {
-            STYLESHEET_410_502_DARK_STATUS_BAR_AREA_DATA(50, StatusBar::AreaAlign::START), // Left: Clock
-            STYLESHEET_410_502_DARK_STATUS_BAR_AREA_DATA(50, StatusBar::AreaAlign::END),   // Right: Wi-Fi & Battery
+            STYLESHEET_410_502_DARK_STATUS_BAR_AREA_DATA(50, StatusBar::AreaAlign::START, 55), // Left: Clock (deep inside flat display area)
+            STYLESHEET_410_502_DARK_STATUS_BAR_AREA_DATA(50, StatusBar::AreaAlign::END, 70),   // Right: Wi-Fi & Battery (deep inside flat display area)
         },
     },
     .icon_common_size = gui::StyleSize::SQUARE(22),

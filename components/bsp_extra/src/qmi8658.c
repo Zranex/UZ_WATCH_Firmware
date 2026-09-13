@@ -17,11 +17,11 @@ static i2c_master_dev_handle_t qmi_dev_handle = NULL;
 
 static esp_err_t qmi_write_reg(uint8_t reg, uint8_t val) {
     uint8_t data[2] = {reg, val};
-    return i2c_master_transmit(qmi_dev_handle, data, 2, -1);
+    return i2c_master_transmit(qmi_dev_handle, data, 2, 20);
 }
 
 static esp_err_t qmi_read_regs(uint8_t reg, uint8_t *data, size_t len) {
-    return i2c_master_transmit_receive(qmi_dev_handle, &reg, 1, data, len, -1);
+    return i2c_master_transmit_receive(qmi_dev_handle, &reg, 1, data, len, 20);
 }
 
 esp_err_t qmi8658_init(void) {

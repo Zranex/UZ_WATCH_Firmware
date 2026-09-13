@@ -494,7 +494,7 @@ esp_err_t bsp_display_new(const bsp_display_config_t *config, esp_lcd_panel_hand
 
     esp_lcd_panel_io_spi_config_t io_config = SH8601_PANEL_IO_QSPI_CONFIG(BSP_LCD_CS, NULL, NULL);
     io_config.pclk_hz = 40 * 1000 * 1000;
-    io_config.trans_queue_depth = 2;
+    io_config.trans_queue_depth = 1;
 
     sh8601_vendor_config_t vendor_config = {
         .init_cmds = lcd_init_cmds,
@@ -555,12 +555,12 @@ esp_err_t bsp_touch_new(const bsp_touch_config_t *config, esp_lcd_touch_handle_t
     return esp_lcd_touch_new_i2c_ft5x06(tp_io_handle, &tp_cfg, ret_touch);
 }
 
-#define BSP_DISPLAY_FLUSH_LINES 30
+#define BSP_DISPLAY_FLUSH_LINES 16
 
 static lv_display_t *bsp_display_lcd_init()
 {
     const bsp_display_config_t disp_config = {
-        .max_transfer_sz = BSP_LCD_H_RES * BSP_DISPLAY_FLUSH_LINES * sizeof(lv_color_t), // 410 * 30 * 2 = 24,600 bytes
+        .max_transfer_sz = BSP_LCD_H_RES * BSP_DISPLAY_FLUSH_LINES * sizeof(lv_color_t), // 410 * 16 * 2 = 13,120 bytes
     };
 
     BSP_ERROR_CHECK_RETURN_NULL(bsp_display_new(&disp_config, &panel_handle, &io_handle));

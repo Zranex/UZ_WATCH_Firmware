@@ -12,6 +12,7 @@
 extern "C" {
 #include "rtc_lib.h"
 #include "wifi_manager.h"
+#include "ble_manager.h"
 }
 
 #define APP_NAME "Settings"
@@ -228,6 +229,23 @@ namespace esp_brookesia::apps {
             }
     }
 
+    static void ble_toggle_btn_event_cb(lv_event_t * e)
+    {
+        lv_obj_t * btn = (lv_obj_t *)lv_event_get_target(e);
+        lv_obj_t * label = lv_obj_get_child(btn, 1);
+        if (ble_manager_is_active()) {
+            ble_manager_set_active(false);
+            if (label && lv_obj_check_type(label, &lv_label_class)) {
+                lv_label_set_text(label, "Bluetooth'u Ac (Tasarruf)");
+            }
+        } else {
+            ble_manager_set_active(true);
+            if (label && lv_obj_check_type(label, &lv_label_class)) {
+                lv_label_set_text(label, "Bluetooth'u Kapat");
+            }
+        }
+    }
+
     static void wifi_scan_btn_event_cb(lv_event_t * e)
     {
         lv_obj_t * list = (lv_obj_t *)lv_event_get_user_data(e);
@@ -318,6 +336,10 @@ namespace esp_brookesia::apps {
 
         lv_obj_t * scan_btn = lv_list_add_btn(wifi_list, LV_SYMBOL_REFRESH, "Aglari Tara");
         lv_obj_add_event_cb(scan_btn, wifi_scan_btn_event_cb, LV_EVENT_CLICKED, wifi_list);
+
+        lv_list_add_text(wifi_list, "Bluetooth:");
+        lv_obj_t * bt_btn = lv_list_add_btn(wifi_list, LV_SYMBOL_BLUETOOTH, ble_manager_is_active() ? "Bluetooth'u Kapat" : "Bluetooth'u Ac (Tasarruf)");
+        lv_obj_add_event_cb(bt_btn, ble_toggle_btn_event_cb, LV_EVENT_CLICKED, NULL);
         
         wifi_status_timer = lv_timer_create(wifi_status_update_cb, 1000, NULL);
         wifi_status_update_cb(wifi_status_timer);

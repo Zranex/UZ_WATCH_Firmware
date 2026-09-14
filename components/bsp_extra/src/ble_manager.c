@@ -26,6 +26,8 @@ static const ble_uuid16_t notif_chr_uuid = BLE_UUID16_INIT(0xFF04);
 
 static uint16_t media_cmd_handle;
 static uint16_t ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+static bool s_ble_active = true;
+static void ble_app_advertise(void);
 
 static int ble_time_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                                struct ble_gatt_access_ctxt *ctxt,
@@ -52,6 +54,7 @@ extern void app_weather_update_advanced_from_ble(const char* city, const char* t
                                                  const char* d0, const char* d1, const char* d2);
 
 extern void app_agenda_update_from_ble(const char* payload);
+extern void app_transit_update_from_ble(const char* payload);
 static const struct ble_gatt_svc_def gatt_svcs[] = {
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
@@ -168,6 +171,8 @@ static int ble_notif_chr_access(uint16_t conn_handle, uint16_t attr_handle,
                 app_call_manager_hide_incoming_call();
                         } else if (strncmp(buf, "AGENDA|", 7) == 0) {
                 app_agenda_update_from_ble(buf + 7);
+            } else if (strncmp(buf, "TRANSIT_RESP|", 13) == 0) {
+                app_transit_update_from_ble(buf + 13);
             } else if (strncmp(buf, "WEATHER2|", 9) == 0) {
                 char* payload = buf + 9;
                 char* city = strtok(payload, "|");
@@ -216,42 +221,26 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
         ESP_LOGI(TAG, "BLE Disconnected. Resuming advertising.");
         ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
         
-        // --- ADDED FOR BLE LOST MODE ---
-        extern void app_notifications_show_system_alert(const char* msg);
-        app_notifications_show_system_alert("Telefon Baglantisi Koptu!");
-        // -------------------------------
-
-        // Resume advertising with power-saving 800-1000ms interval
-        struct ble_gap_adv_params adv_params;
-        memset(&adv_params, 0, sizeof(adv_params));
-        adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
-        adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
-        adv_params.itvl_min = 1280; // 800ms
-        adv_params.itvl_max = 1600; // 1000ms
-        uint8_t own_addr_type;
-        ble_hs_id_infer_auto(0, &own_addr_type);
-        ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER, &adv_params, NULL, NULL);
+        if (s_ble_active) {
+            extern void app_notifications_show_system_alert(const char* msg);
+            app_notifications_show_system_alert("Telefon Baglantisi Koptu!");
+            ble_app_advertise();
+        }
         break;
     }
     return 0;
 }
 
-static void ble_app_on_sync(void)
+static void ble_app_advertise(void)
 {
-    esp_err_t rc;
-
-    const char *dev_name = "UZ WATCH";
-    rc = ble_svc_gap_device_name_set(dev_name);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "Failed to set device name, rc=%d", rc);
-        return;
-    }
+    if (!s_ble_active) return;
 
     struct ble_hs_adv_fields fields;
     memset(&fields, 0, sizeof fields);
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.tx_pwr_lvl_is_present = 1;
     fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;
+    const char *dev_name = "UZ WATCH";
     fields.name = (uint8_t *)dev_name;
     fields.name_len = strlen(dev_name);
     fields.name_is_complete = 1;
@@ -261,7 +250,7 @@ static void ble_app_on_sync(void)
     fields.num_uuids16 = 1;
     fields.uuids16_is_complete = 1;
 
-    rc = ble_gap_adv_set_fields(&fields);
+    esp_err_t rc = ble_gap_adv_set_fields(&fields);
     if (rc != 0) {
         ESP_LOGE(TAG, "Error setting advertisement data; rc=%d", rc);
         return;
@@ -288,6 +277,46 @@ static void ble_app_on_sync(void)
     }
 
     ESP_LOGI(TAG, "Advertising started as UZ WATCH");
+}
+
+bool ble_manager_is_active(void)
+{
+    return s_ble_active;
+}
+
+void ble_manager_set_active(bool enable)
+{
+    if (s_ble_active == enable) return;
+    s_ble_active = enable;
+
+    if (!enable) {
+        ESP_LOGI(TAG, "Disabling BLE (Radio sleep/power save)...");
+        if (ble_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+            ble_gap_terminate(ble_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+            ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+        }
+        ble_gap_adv_stop();
+        ESP_LOGI(TAG, "BLE advertising stopped.");
+    } else {
+        ESP_LOGI(TAG, "Enabling BLE...");
+        ble_app_advertise();
+    }
+}
+
+static void ble_app_on_sync(void)
+{
+    esp_err_t rc;
+
+    const char *dev_name = "UZ WATCH";
+    rc = ble_svc_gap_device_name_set(dev_name);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Failed to set device name, rc=%d", rc);
+        return;
+    }
+
+    if (s_ble_active) {
+        ble_app_advertise();
+    }
 }
 
 static void ble_host_task(void *param)

@@ -18,6 +18,16 @@ esp_err_t ble_manager_init(void);
  */
 void ble_manager_send_media_command(const char* command);
 
+/**
+ * @brief Check if BLE is enabled
+ */
+bool ble_manager_is_active(void);
+
+/**
+ * @brief Enable or disable BLE (turns off advertising & radio to save power)
+ */
+void ble_manager_set_active(bool enable);
+
 #ifdef __cplusplus
 }
 #endif

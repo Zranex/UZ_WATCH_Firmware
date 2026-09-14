@@ -57,13 +57,16 @@ bool AppAirDrop::run() {
 }
 
 bool AppAirDrop::back() {
-    return true;
+    return close();
 }
 
 bool AppAirDrop::close() {
-    ESP_LOGI(TAG, "AirDrop Uygulamasi kapaniyor, arka planda calismaya devam ediyor.");
-    // AirDropManager::stop_server();
-    _bg_obj = nullptr;
+    ESP_LOGI(TAG, "AirDrop Uygulamasi kapaniyor, sunucu durduruluyor.");
+    AirDropManager::stop_server();
+    if (_bg_obj != nullptr) {
+        lv_obj_del(_bg_obj);
+        _bg_obj = nullptr;
+    }
     _label_status = nullptr;
     _label_desc = nullptr;
     return true;

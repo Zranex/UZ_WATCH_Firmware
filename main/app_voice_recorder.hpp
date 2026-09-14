@@ -36,6 +36,7 @@ private:
 
     TaskHandle_t _task_handle;
     esp_codec_dev_handle_t _mic_codec;
+    bool _mic_codec_opened;
     std::vector<std::string> _recordings;
 
     static void btn_record_cb(lv_event_t *e);

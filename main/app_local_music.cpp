@@ -348,12 +348,18 @@ void AppLocalMusic::audio_task(void *pvParameter) {
         return;
     }
 
+    bool pa_enabled = false;
+
     while (!app->_is_app_closed) {
         
         // Handle song changes (Next/Prev or initial play)
         if (app->_song_changed) {
             app->_song_changed = false;
             
+            if (pa_enabled) {
+                bsp_audio_power_amp_enable(false);
+                pa_enabled = false;
+            }
             if (f) {
                 fclose(f);
                 f = NULL;
@@ -414,7 +420,7 @@ void AppLocalMusic::audio_task(void *pvParameter) {
                             esp_codec_dev_set_out_vol(spk_codec_dev, app->_volume);
                             
                             // Update UI with song name
-                            if (bsp_display_lock(0)) {
+                            if (bsp_display_lock(50)) {
                                 if (!app->_is_app_closed && app->_status_label) {
                                     size_t slash = filepath.find_last_of("/");
                                     std::string short_name = (slash != std::string::npos) ? filepath.substr(slash + 1) : filepath;
@@ -430,7 +436,7 @@ void AppLocalMusic::audio_task(void *pvParameter) {
                     ESP_UTILS_LOGE("Not a valid RIFF/WAVE file: %s", filepath.c_str());
                 }
             } else {
-                if (bsp_display_lock(0)) {
+                if (bsp_display_lock(50)) {
                     app->_is_playing = false;
                     app->update_play_button_text();
                     if (!app->_is_app_closed && app->_status_label) lv_label_set_text(app->_status_label, "Error: File not found");
@@ -441,14 +447,21 @@ void AppLocalMusic::audio_task(void *pvParameter) {
         
         // Playback loop
         if (app->_is_playing && f && codec_opened && spk_codec_dev) {
-            bsp_audio_power_amp_enable(true);
+            if (!pa_enabled) {
+                bsp_audio_power_amp_enable(true);
+                pa_enabled = true;
+            }
             size_t read_bytes = fread(buf, 1, CHUNK_SIZE, f);
             if (read_bytes > 0) {
                 esp_codec_dev_write(spk_codec_dev, buf, read_bytes);
+                taskYIELD();
             } else {
                 // EOF reached
-                bsp_audio_power_amp_enable(false);
-                if (bsp_display_lock(0)) {
+                if (pa_enabled) {
+                    bsp_audio_power_amp_enable(false);
+                    pa_enabled = false;
+                }
+                if (bsp_display_lock(50)) {
                     app->_is_playing = false;
                     app->update_play_button_text();
                     if (!app->_is_app_closed && app->_status_label) lv_label_set_text(app->_status_label, "Finished");
@@ -457,7 +470,10 @@ void AppLocalMusic::audio_task(void *pvParameter) {
             }
         } else {
             // Idle or Paused - sleep to avoid CPU spinning and shut off PA
-            bsp_audio_power_amp_enable(false);
+            if (pa_enabled) {
+                bsp_audio_power_amp_enable(false);
+                pa_enabled = false;
+            }
             vTaskDelay(pdMS_TO_TICKS(50));
         }
     }
@@ -465,7 +481,10 @@ void AppLocalMusic::audio_task(void *pvParameter) {
     // Cleanup when app closes
     if (f) fclose(f);
     if (codec_opened && spk_codec_dev) esp_codec_dev_close(spk_codec_dev);
-    bsp_audio_power_amp_enable(false);
+    if (pa_enabled) {
+        bsp_audio_power_amp_enable(false);
+        pa_enabled = false;
+    }
     if (buf) free(buf);
     
     app->_audio_task_handle = NULL;

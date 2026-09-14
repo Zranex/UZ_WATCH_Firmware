@@ -28,7 +28,6 @@ extern "C" {
 #include "app_calibration.hpp"
 #include "app_media_player.hpp"
 #include "app_weather.hpp"
-#include "app_weather.hpp"
 #include "app_notifications_custom.hpp"
 #include "app_activity.hpp"
 #include "app_smart_home.hpp"
@@ -37,7 +36,8 @@ extern "C" {
 #include "app_find_phone.hpp"
 #include "app_flashlight.hpp"
 #include "app_agenda.hpp"
-// #include "app_airdrop.hpp"
+#include "app_transit.hpp"
+#include "app_airdrop.hpp"
 
 extern "C" {
 #include "ble_manager.h"
@@ -248,8 +248,11 @@ extern "C" void app_main(void)
         AppAgenda *agendaApp = new (std::nothrow) AppAgenda();
         phone->installApp(agendaApp);
 
-        // AppAirDrop *airdropApp = new (std::nothrow) AppAirDrop();
-        // if(airdropApp) phone->installApp(airdropApp);
+        AppTransit *transitApp = new (std::nothrow) AppTransit();
+        phone->installApp(transitApp);
+
+        AppAirDrop *airdropApp = new (std::nothrow) AppAirDrop();
+        if(airdropApp) phone->installApp(airdropApp);
 
         /* Notifications UI Init */
         AppNotifications::init();

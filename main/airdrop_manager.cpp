@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/param.h>
 #include <unistd.h>
+#include "esp_heap_caps.h"
 
 static const char *TAG = "AirDrop";
 bool AirDropManager::_is_sd_mounted = false;
@@ -76,8 +77,11 @@ static esp_err_t upload_post_handler(httpd_req_t *req) {
 
     ESP_LOGI(TAG, "Receiving file : %s...", filepath);
 
-    // RAM Dostu: Gelen devasa dosyayi chunk'lar halinde SD Karta yazar
-    char *chunk = (char *)malloc(4096); // 8KB buffer
+    // RAM Dostu: Gelen devasa dosyayi chunk'lar halinde SD Karta yazar (PSRAM tercihli)
+    char *chunk = (char *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!chunk) {
+        chunk = (char *)malloc(4096);
+    }
     if (!chunk) {
         fclose(fd);
         httpd_resp_send_500(req);

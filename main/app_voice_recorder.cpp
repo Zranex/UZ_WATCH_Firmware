@@ -18,7 +18,8 @@ AppVoiceRecorder::AppVoiceRecorder()
       _btn_record(nullptr), _btn_play(nullptr), _btn_delete(nullptr),
       _recordings_list(nullptr), _status_label(nullptr),
       _is_recording(false), _is_playing(false), _is_app_closed(true), 
-      _record_start_tick(0), _selected_index(-1), _task_handle(NULL), _mic_codec(NULL) {
+      _record_start_tick(0), _selected_index(-1), _task_handle(NULL), 
+      _mic_codec(NULL), _mic_codec_opened(false) {
 }
 
 AppVoiceRecorder::~AppVoiceRecorder() {}
@@ -96,7 +97,9 @@ bool AppVoiceRecorder::run() {
     lv_obj_set_size(_recordings_list, LV_PCT(90), 180);
     lv_obj_align(_recordings_list, LV_ALIGN_CENTER, 0, 0);
 
-    _mic_codec = bsp_audio_codec_microphone_init();
+    if (_mic_codec == NULL) {
+        _mic_codec = bsp_audio_codec_microphone_init();
+    }
     load_list();
     update_ui();
     return true;
@@ -118,10 +121,10 @@ bool AppVoiceRecorder::close() {
         wait_count++;
     }
 
-    // 2. Safely close mic codec if still open
-    if (_mic_codec) {
+    // 2. Safely close mic codec ONLY if open
+    if (_mic_codec && _mic_codec_opened) {
         esp_codec_dev_close(_mic_codec);
-        _mic_codec = NULL;
+        _mic_codec_opened = false;
     }
 
     // 3. Delete UI objects and clear pointers
@@ -359,6 +362,7 @@ void AppVoiceRecorder::audio_task(void *pvParameter) {
                     .mclk_multiple = 0,
                 };
                 if (esp_codec_dev_open(self->_mic_codec, &fs) == ESP_OK) {
+                    self->_mic_codec_opened = true;
                     esp_codec_dev_set_in_gain(self->_mic_codec, 30.0);
                     
                     uint32_t total_written = 0;
@@ -371,18 +375,19 @@ void AppVoiceRecorder::audio_task(void *pvParameter) {
                         }
                         
                         ui_update_counter++;
-                        if (ui_update_counter > 50) {
+                        if (ui_update_counter > 20) {
                             ui_update_counter = 0;
-                            if (!self->_is_app_closed && bsp_display_lock(0)) {
+                            if (!self->_is_app_closed && bsp_display_lock(50)) {
                                 self->update_timer();
                                 bsp_display_unlock();
                             }
                         }
-                        vTaskDelay(pdMS_TO_TICKS(10));
+                        taskYIELD();
                     }
                     
                     write_wav_header(f, total_written);
                     esp_codec_dev_close(self->_mic_codec);
+                    self->_mic_codec_opened = false;
                 }
                 fclose(f);
                 
@@ -423,7 +428,7 @@ void AppVoiceRecorder::audio_task(void *pvParameter) {
                             if (read_bytes == 0) break;
                             
                             esp_codec_dev_write(spk_codec_dev, buffer, read_bytes);
-                            vTaskDelay(pdMS_TO_TICKS(10));
+                            taskYIELD();
                         }
                         esp_codec_dev_close(spk_codec_dev);
                     }

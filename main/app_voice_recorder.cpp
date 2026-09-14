@@ -110,10 +110,21 @@ bool AppVoiceRecorder::close() {
     _is_app_closed = true;
     _is_recording = false;
     _is_playing = false;
+
+    // 1. Wait for audio_task to finish cleanly if running
+    int wait_count = 0;
+    while (_task_handle != NULL && wait_count < 100) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        wait_count++;
+    }
+
+    // 2. Safely close mic codec if still open
     if (_mic_codec) {
         esp_codec_dev_close(_mic_codec);
         _mic_codec = NULL;
     }
+
+    // 3. Delete UI objects and clear pointers
     if (_bg_obj != nullptr) {
         lv_obj_del(_bg_obj);
         _bg_obj = nullptr;
@@ -179,16 +190,19 @@ void AppVoiceRecorder::load_list() {
 }
 
 void AppVoiceRecorder::update_ui() {
+    if (_is_app_closed || !_bg_obj || !_status_label || !_btn_record || !_btn_play) {
+        return;
+    }
     if (_is_recording) {
         lv_label_set_text(_status_label, "Kaydediliyor...");
         lv_obj_set_style_bg_color(_btn_record, lv_color_hex(0xFF0000), 0);
         lv_obj_add_state(_btn_play, LV_STATE_DISABLED);
-        lv_obj_add_state(_btn_delete, LV_STATE_DISABLED);
+        if (_btn_delete) lv_obj_add_state(_btn_delete, LV_STATE_DISABLED);
     } else if (_is_playing) {
         lv_label_set_text(_status_label, "Oynatiliyor...");
         lv_obj_set_style_bg_color(_btn_play, lv_color_hex(0x00FF00), 0);
         lv_obj_add_state(_btn_record, LV_STATE_DISABLED);
-        lv_obj_add_state(_btn_delete, LV_STATE_DISABLED);
+        if (_btn_delete) lv_obj_add_state(_btn_delete, LV_STATE_DISABLED);
     } else {
         lv_label_set_text(_status_label, _selected_index >= 0 ? "Hazir (Secili var)" : "Hazir");
         lv_obj_set_style_bg_color(_btn_record, lv_palette_main(LV_PALETTE_BLUE), 0);
@@ -196,43 +210,48 @@ void AppVoiceRecorder::update_ui() {
         lv_obj_clear_state(_btn_play, LV_STATE_DISABLED);
         lv_obj_clear_state(_btn_record, LV_STATE_DISABLED);
         
-        if (_selected_index >= 0) {
-            lv_obj_clear_state(_btn_delete, LV_STATE_DISABLED);
-        } else {
-            lv_obj_add_state(_btn_delete, LV_STATE_DISABLED);
+        if (_btn_delete) {
+            if (_selected_index >= 0) {
+                lv_obj_clear_state(_btn_delete, LV_STATE_DISABLED);
+            } else {
+                lv_obj_add_state(_btn_delete, LV_STATE_DISABLED);
+            }
         }
     }
 }
 
 void AppVoiceRecorder::update_timer() {
+    if (_is_app_closed || !_bg_obj || !_timer_label) return;
     if (_is_recording && _record_start_tick > 0) {
         uint32_t elapsed_sec = (xTaskGetTickCount() - _record_start_tick) * portTICK_PERIOD_MS / 1000;
         char buf[16];
-        snprintf(buf, sizeof(buf), "%02lu:%02lu", elapsed_sec / 60, elapsed_sec % 60);
+        snprintf(buf, sizeof(buf), "%02lu:%02lu", (unsigned long)(elapsed_sec / 60), (unsigned long)(elapsed_sec % 60));
         lv_label_set_text(_timer_label, buf);
     }
 }
 
 void AppVoiceRecorder::btn_record_cb(lv_event_t *e) {
     AppVoiceRecorder *self = (AppVoiceRecorder *)lv_event_get_user_data(e);
+    if (!self || self->_is_app_closed) return;
     if (self->_is_recording) {
         self->_is_recording = false;
     } else if (!self->_is_playing) {
         self->_is_recording = true;
         self->_record_start_tick = xTaskGetTickCount();
         self->update_ui();
-        xTaskCreate(audio_task, "audio_task", 16384, self, 3, &self->_task_handle);
+        xTaskCreate(audio_task, "audio_task", 4096, self, 3, &self->_task_handle);
     }
 }
 
 void AppVoiceRecorder::btn_play_cb(lv_event_t *e) {
     AppVoiceRecorder *self = (AppVoiceRecorder *)lv_event_get_user_data(e);
+    if (!self || self->_is_app_closed) return;
     if (self->_is_playing) {
         self->_is_playing = false;
     } else if (!self->_is_recording && self->_selected_index >= 0 && self->_selected_index < (int)self->_recordings.size()) {
         self->_is_playing = true;
         self->update_ui();
-        xTaskCreate(audio_task, "audio_task", 16384, self, 3, &self->_task_handle);
+        xTaskCreate(audio_task, "audio_task", 4096, self, 3, &self->_task_handle);
     }
 }
 
@@ -299,99 +318,126 @@ static void write_wav_header(FILE* f, uint32_t data_size) {
 
 void AppVoiceRecorder::audio_task(void *pvParameter) {
     AppVoiceRecorder *self = (AppVoiceRecorder *)pvParameter;
+    if (!self) {
+        vTaskDelete(NULL);
+        return;
+    }
     uint8_t *buffer = (uint8_t *)malloc(1024);
+    if (!buffer) {
+        ESP_LOGE(TAG, "Failed to allocate audio buffer!");
+        self->_is_recording = false;
+        self->_is_playing = false;
+        self->_task_handle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
     
     if (self->_is_recording) {
-        std::string filename = self->generate_filename();
-        char filepath[256];
-        snprintf(filepath, sizeof(filepath), "%s/%s", BSP_SD_MOUNT_POINT, filename.c_str());
-        
-        FILE *f = fopen(filepath, "wb");
-        if (f) {
-            write_wav_header(f, 0); 
-            
-            esp_codec_dev_sample_info_t fs = {
-                .bits_per_sample = 16,
-                .channel = 1,
-                .channel_mask = 0,
-                .sample_rate = 22050,
-                .mclk_multiple = 0,
-            };
-            esp_codec_dev_open(self->_mic_codec, &fs);
-            esp_codec_dev_set_in_gain(self->_mic_codec, 30.0);
-            
-            uint32_t total_written = 0;
-            uint32_t ui_update_counter = 0;
-            while (self->_is_recording && !self->_is_app_closed) {
-                int ret = esp_codec_dev_read(self->_mic_codec, buffer, 1024);
-                if (ret == 0) {
-                    fwrite(buffer, 1, 1024, f);
-                    total_written += 1024;
-                }
-                
-                ui_update_counter++;
-                if (ui_update_counter > 50) {
-                    ui_update_counter = 0;
-                    if (bsp_display_lock(0)) {
-                        self->update_timer();
-                        bsp_display_unlock();
-                    }
-                }
-                vTaskDelay(pdMS_TO_TICKS(10));
-            }
-            
-            write_wav_header(f, total_written);
-            fclose(f);
-            esp_codec_dev_close(self->_mic_codec);
-            
+        if (!self->_mic_codec) {
+            ESP_LOGE(TAG, "Mic codec not available!");
             if (bsp_display_lock(100)) {
-                self->load_list();
+                if (!self->_is_app_closed && self->_status_label) {
+                    lv_label_set_text(self->_status_label, "Mikrofon Hatasi");
+                }
                 bsp_display_unlock();
             }
+            self->_is_recording = false;
+        } else {
+            std::string filename = self->generate_filename();
+            char filepath[256];
+            snprintf(filepath, sizeof(filepath), "%s/%s", BSP_SD_MOUNT_POINT, filename.c_str());
+            
+            FILE *f = fopen(filepath, "wb");
+            if (f) {
+                write_wav_header(f, 0); 
+                
+                esp_codec_dev_sample_info_t fs = {
+                    .bits_per_sample = 16,
+                    .channel = 1,
+                    .channel_mask = 0,
+                    .sample_rate = 22050,
+                    .mclk_multiple = 0,
+                };
+                if (esp_codec_dev_open(self->_mic_codec, &fs) == ESP_OK) {
+                    esp_codec_dev_set_in_gain(self->_mic_codec, 30.0);
+                    
+                    uint32_t total_written = 0;
+                    uint32_t ui_update_counter = 0;
+                    while (self->_is_recording && !self->_is_app_closed) {
+                        int ret = esp_codec_dev_read(self->_mic_codec, buffer, 1024);
+                        if (ret == 0) {
+                            fwrite(buffer, 1, 1024, f);
+                            total_written += 1024;
+                        }
+                        
+                        ui_update_counter++;
+                        if (ui_update_counter > 50) {
+                            ui_update_counter = 0;
+                            if (!self->_is_app_closed && bsp_display_lock(0)) {
+                                self->update_timer();
+                                bsp_display_unlock();
+                            }
+                        }
+                        vTaskDelay(pdMS_TO_TICKS(10));
+                    }
+                    
+                    write_wav_header(f, total_written);
+                    esp_codec_dev_close(self->_mic_codec);
+                }
+                fclose(f);
+                
+                if (!self->_is_app_closed && bsp_display_lock(100)) {
+                    self->load_list();
+                    bsp_display_unlock();
+                }
+            }
+            self->_is_recording = false;
         }
-        self->_is_recording = false;
         
     } else if (self->_is_playing) {
-        std::string filename = self->_recordings[self->_selected_index];
-        char filepath[256];
-        snprintf(filepath, sizeof(filepath), "%s/%s", BSP_SD_MOUNT_POINT, filename.c_str());
-        
-        ESP_LOGI(TAG, "PLAY: Aciliyor -> %s", filepath);
-        FILE *f = fopen(filepath, "rb");
-        if (f) {
-            fseek(f, 44, SEEK_SET); 
+        if (self->_selected_index >= 0 && self->_selected_index < (int)self->_recordings.size()) {
+            std::string filename = self->_recordings[self->_selected_index];
+            char filepath[256];
+            snprintf(filepath, sizeof(filepath), "%s/%s", BSP_SD_MOUNT_POINT, filename.c_str());
             
-            esp_codec_dev_sample_info_t fs = {
-                .bits_per_sample = 16,
-                .channel = 1,
-                .channel_mask = 0,
-                .sample_rate = 22050,
-                .mclk_multiple = 0,
-            };
-            
-            if (spk_codec_dev) {
-                bsp_audio_power_amp_enable(true);
-                esp_codec_dev_open(spk_codec_dev, &fs);
-                esp_codec_dev_set_out_vol(spk_codec_dev, 70);
+            ESP_LOGI(TAG, "PLAY: Aciliyor -> %s", filepath);
+            FILE *f = fopen(filepath, "rb");
+            if (f) {
+                fseek(f, 44, SEEK_SET); 
                 
-                while (self->_is_playing && !self->_is_app_closed) {
-                    size_t read_bytes = fread(buffer, 1, 1024, f);
-                    if (read_bytes == 0) break;
-                    
-                    esp_codec_dev_write(spk_codec_dev, buffer, read_bytes);
-                    vTaskDelay(pdMS_TO_TICKS(10));
+                esp_codec_dev_sample_info_t fs = {
+                    .bits_per_sample = 16,
+                    .channel = 1,
+                    .channel_mask = 0,
+                    .sample_rate = 22050,
+                    .mclk_multiple = 0,
+                };
+                
+                if (spk_codec_dev) {
+                    bsp_audio_power_amp_enable(true);
+                    if (esp_codec_dev_open(spk_codec_dev, &fs) == ESP_OK) {
+                        esp_codec_dev_set_out_vol(spk_codec_dev, 70);
+                        
+                        while (self->_is_playing && !self->_is_app_closed) {
+                            size_t read_bytes = fread(buffer, 1, 1024, f);
+                            if (read_bytes == 0) break;
+                            
+                            esp_codec_dev_write(spk_codec_dev, buffer, read_bytes);
+                            vTaskDelay(pdMS_TO_TICKS(10));
+                        }
+                        esp_codec_dev_close(spk_codec_dev);
+                    }
+                    bsp_audio_power_amp_enable(false);
                 }
-                esp_codec_dev_close(spk_codec_dev);
-                bsp_audio_power_amp_enable(false);
+                fclose(f);
             }
-            fclose(f);
         }
         self->_is_playing = false;
     }
 
     free(buffer);
     
-    if (bsp_display_lock(100)) {
+    if (!self->_is_app_closed && bsp_display_lock(100)) {
         self->update_ui();
         bsp_display_unlock();
     }

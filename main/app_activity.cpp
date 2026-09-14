@@ -82,6 +82,9 @@ bool AppActivity::close() {
         lv_obj_delete(_bg_obj);
         _bg_obj = nullptr;
     }
+    _arc_steps = nullptr;
+    _label_steps = nullptr;
+    _label_desc = nullptr;
     return true;
 }
 

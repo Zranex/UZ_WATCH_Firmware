@@ -49,6 +49,17 @@ static void time_sync_notification_cb(struct timeval *tv)
              timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
 }
 
+static void wifi_auto_stop_task(void* arg) {
+    vTaskDelay(pdMS_TO_TICKS(200));
+    ESP_LOGW(TAG, "Wi-Fi disconnected/unreachable -> Auto-stopping Wi-Fi radio to preserve battery!");
+    wifi_manager_stop();
+    vTaskDelete(NULL);
+}
+
+static void trigger_wifi_auto_stop(void) {
+    xTaskCreate(wifi_auto_stop_task, "wifi_autostop", 3072, NULL, 3, NULL);
+}
+
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                     int32_t event_id, void* event_data)
 {
@@ -60,19 +71,17 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t* disc = (wifi_event_sta_disconnected_t*)event_data;
         ESP_LOGW(TAG, "Wi-Fi disconnected (reason: %d)", disc ? disc->reason : -1);
-        if (current_state == WIFI_STATE_CONNECTING) {
-            if (s_retry_count < 3) {
-                s_retry_count++;
-                ESP_LOGI(TAG, "Reconnecting attempt %d/3...", s_retry_count);
-                vTaskDelay(pdMS_TO_TICKS(300));
-                esp_wifi_connect();
-            } else {
-                s_retry_count = 0;
-                current_state = WIFI_STATE_FAILED;
-                ESP_LOGW(TAG, "Connection failed after 3 retries, state = FAILED");
-            }
+        if (s_retry_count < 2) {
+            s_retry_count++;
+            current_state = WIFI_STATE_CONNECTING;
+            ESP_LOGI(TAG, "Reconnecting attempt %d/2...", s_retry_count);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            esp_wifi_connect();
         } else {
-            current_state = WIFI_STATE_IDLE;
+            s_retry_count = 0;
+            current_state = WIFI_STATE_FAILED;
+            ESP_LOGW(TAG, "Wi-Fi AP unreachable after 2 attempts. Auto-stopping Wi-Fi to save battery!");
+            trigger_wifi_auto_stop();
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
         ESP_LOGI(TAG, "[WIFI] STA_CONNECTED to %s", DEFAULT_WIFI_SSID);
@@ -120,6 +129,25 @@ esp_err_t wifi_manager_pre_init(void)
 
     ESP_LOGI(TAG, "Pre-init done (NVS + TZ only, no WiFi hardware)");
     return ESP_OK;
+}
+
+static void wifi_connect_watchdog_task(void* pv) {
+    for (int i = 0; i < 30; i++) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        if (!wifi_active) {
+            vTaskDelete(NULL);
+            return;
+        }
+        if (current_state == WIFI_STATE_GOT_IP) {
+            vTaskDelete(NULL);
+            return;
+        }
+    }
+    if (wifi_active && current_state != WIFI_STATE_GOT_IP && current_state != WIFI_STATE_CONNECTED) {
+        ESP_LOGW(TAG, "Wi-Fi watchdog timeout (15s) -> Shutting down Wi-Fi radio to preserve battery!");
+        wifi_manager_stop();
+    }
+    vTaskDelete(NULL);
 }
 
 // Full WiFi start — called on-demand from Settings UI
@@ -212,6 +240,9 @@ esp_err_t wifi_manager_start(void)
 
     // 2. Enable Modem-Sleep power saving (radio sleeps between beacons)
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_MIN_MODEM));
+
+    // 3. Launch watchdog to auto-stop Wi-Fi if connection cannot be established within 15 seconds
+    xTaskCreate(wifi_connect_watchdog_task, "wifi_wdog", 3072, NULL, 3, NULL);
 
     ESP_LOGI(TAG, "WiFi hardware started & default AP (%s) configured", DEFAULT_WIFI_SSID);
     return ESP_OK;

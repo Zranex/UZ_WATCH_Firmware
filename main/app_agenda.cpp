@@ -53,6 +53,8 @@ bool AppAgenda::close() {
         lv_obj_del(_bg_obj);
         _bg_obj = nullptr;
     }
+    _list = nullptr;
+    _title_label = nullptr;
     return true;
 }
 

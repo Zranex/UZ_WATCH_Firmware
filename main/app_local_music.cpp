@@ -46,7 +46,7 @@ void AppLocalMusic::play_song_by_name(const char* name) {
             _is_app_closed = false; // Ensure task stays alive
             
             if (_audio_task_handle == NULL) {
-                xTaskCreate(audio_task, "local_audio_task", 16384, this, 4, &_audio_task_handle);
+                xTaskCreate(audio_task, "local_audio_task", 4096, this, 4, &_audio_task_handle);
             }
             
             if (bsp_display_lock(0)) {
@@ -223,7 +223,7 @@ bool AppLocalMusic::run() {
     update_play_button_text();
     
     if (_audio_task_handle == NULL) {
-        xTaskCreate(audio_task, "local_audio_task", 16384, this, 4, &_audio_task_handle);
+        xTaskCreate(audio_task, "local_audio_task", 4096, this, 4, &_audio_task_handle);
     }
     return true;
 }
@@ -262,11 +262,28 @@ bool AppLocalMusic::back() {
 bool AppLocalMusic::close() {
     stop_playback();
 
+    _is_app_closed = true;
+
+    // Wait for audio task to exit cleanly
+    int wait_count = 0;
+    while (_audio_task_handle != NULL && wait_count < 100) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        wait_count++;
+    }
+
     if (_bg_obj != nullptr) {
         lv_obj_del(_bg_obj);
         _bg_obj = nullptr;
     }
-    _is_app_closed = true;
+    _title_label = nullptr;
+    _status_label = nullptr;
+    _btn_play = nullptr;
+    _lbl_play = nullptr;
+    _btn_next = nullptr;
+    _btn_prev = nullptr;
+    _btn_vol_up = nullptr;
+    _btn_vol_down = nullptr;
+    _vol_label = nullptr;
     return true;
 }
 
@@ -282,7 +299,7 @@ void AppLocalMusic::ui_event_cb(lv_event_t * e) {
 }
 
 void AppLocalMusic::update_play_button_text() {
-    if (!_lbl_play || !_btn_play) return;
+    if (_is_app_closed || !_bg_obj || !_lbl_play || !_btn_play) return;
     
     if (_is_playing) {
         lv_label_set_text(_lbl_play, LV_SYMBOL_PAUSE);
@@ -314,7 +331,7 @@ void AppLocalMusic::start_playback() {
 void AppLocalMusic::stop_playback() {
     _is_playing = false;
     update_play_button_text();
-    if (_status_label) lv_label_set_text(_status_label, "Paused");
+    if (!_is_app_closed && _status_label) lv_label_set_text(_status_label, "Paused");
 }
 
 void AppLocalMusic::audio_task(void *pvParameter) {
@@ -322,7 +339,7 @@ void AppLocalMusic::audio_task(void *pvParameter) {
     FILE * f = NULL;
     bool codec_opened = false;
     
-    const int CHUNK_SIZE = 16384; 
+    const int CHUNK_SIZE = 2048; 
     uint8_t * buf = (uint8_t *)malloc(CHUNK_SIZE);
     if (!buf) {
         ESP_UTILS_LOGE("Failed to allocate audio chunk buffer!");
@@ -386,7 +403,7 @@ void AppLocalMusic::audio_task(void *pvParameter) {
                         }
                     }
 
-                    if (found_data && num_channels > 0 && sample_rate > 0) {
+                    if (found_data && num_channels > 0 && sample_rate > 0 && spk_codec_dev) {
                         esp_codec_dev_sample_info_t fs = {
                             .bits_per_sample = (uint8_t)bit_depth,
                             .channel = (uint8_t)num_channels,
@@ -398,9 +415,11 @@ void AppLocalMusic::audio_task(void *pvParameter) {
                             
                             // Update UI with song name
                             if (bsp_display_lock(0)) {
-                                size_t slash = filepath.find_last_of("/");
-                                std::string short_name = (slash != std::string::npos) ? filepath.substr(slash + 1) : filepath;
-                                if (app->_status_label) lv_label_set_text_fmt(app->_status_label, "%s", short_name.c_str());
+                                if (!app->_is_app_closed && app->_status_label) {
+                                    size_t slash = filepath.find_last_of("/");
+                                    std::string short_name = (slash != std::string::npos) ? filepath.substr(slash + 1) : filepath;
+                                    lv_label_set_text_fmt(app->_status_label, "%s", short_name.c_str());
+                                }
                                 bsp_display_unlock();
                             }
                         }
@@ -414,14 +433,14 @@ void AppLocalMusic::audio_task(void *pvParameter) {
                 if (bsp_display_lock(0)) {
                     app->_is_playing = false;
                     app->update_play_button_text();
-                    if (app->_status_label) lv_label_set_text(app->_status_label, "Error: File not found");
+                    if (!app->_is_app_closed && app->_status_label) lv_label_set_text(app->_status_label, "Error: File not found");
                     bsp_display_unlock();
                 }
             }
         }
         
         // Playback loop
-        if (app->_is_playing && f && codec_opened) {
+        if (app->_is_playing && f && codec_opened && spk_codec_dev) {
             bsp_audio_power_amp_enable(true);
             size_t read_bytes = fread(buf, 1, CHUNK_SIZE, f);
             if (read_bytes > 0) {
@@ -432,7 +451,7 @@ void AppLocalMusic::audio_task(void *pvParameter) {
                 if (bsp_display_lock(0)) {
                     app->_is_playing = false;
                     app->update_play_button_text();
-                    if (app->_status_label) lv_label_set_text(app->_status_label, "Finished");
+                    if (!app->_is_app_closed && app->_status_label) lv_label_set_text(app->_status_label, "Finished");
                     bsp_display_unlock();
                 }
             }
@@ -445,7 +464,7 @@ void AppLocalMusic::audio_task(void *pvParameter) {
 
     // Cleanup when app closes
     if (f) fclose(f);
-    if (codec_opened) esp_codec_dev_close(spk_codec_dev);
+    if (codec_opened && spk_codec_dev) esp_codec_dev_close(spk_codec_dev);
     bsp_audio_power_amp_enable(false);
     if (buf) free(buf);
     

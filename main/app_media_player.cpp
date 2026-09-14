@@ -186,7 +186,7 @@ void AppMediaPlayer::apply_theme(const char* source) {
     // Play button always inverted
     if (_btn_play) {
         lv_obj_set_style_bg_color(_btn_play, text_color, 0);
-        lv_obj_set_style_text_color(_label_play_icon, bg_color, 0);
+        if (_label_play_icon) lv_obj_set_style_text_color(_label_play_icon, bg_color, 0);
     }
 }
 
@@ -198,15 +198,17 @@ void AppMediaPlayer::update_media_data(const char* source, const char* title, co
     
     if (!_instance->_bg_obj) return; // App is not running/visible
     
-    if (title) lv_label_set_text(_instance->_label_title, title);
-    if (artist) lv_label_set_text(_instance->_label_artist, artist);
+    if (title && _instance->_label_title) lv_label_set_text(_instance->_label_title, title);
+    if (artist && _instance->_label_artist) lv_label_set_text(_instance->_label_artist, artist);
     
     _instance->apply_theme(_instance->_current_source.c_str());
 
-    if (_instance->_current_state == "PLAYING") {
-        lv_label_set_text(_instance->_label_play_icon, LV_SYMBOL_PAUSE);
-    } else {
-        lv_label_set_text(_instance->_label_play_icon, LV_SYMBOL_PLAY);
+    if (_instance->_label_play_icon) {
+        if (_instance->_current_state == "PLAYING") {
+            lv_label_set_text(_instance->_label_play_icon, LV_SYMBOL_PAUSE);
+        } else {
+            lv_label_set_text(_instance->_label_play_icon, LV_SYMBOL_PLAY);
+        }
     }
 }
 

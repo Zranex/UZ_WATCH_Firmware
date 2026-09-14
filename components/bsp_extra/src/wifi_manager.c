@@ -75,7 +75,6 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
             s_retry_count++;
             current_state = WIFI_STATE_CONNECTING;
             ESP_LOGI(TAG, "Reconnecting attempt %d/2...", s_retry_count);
-            vTaskDelay(pdMS_TO_TICKS(500));
             esp_wifi_connect();
         } else {
             s_retry_count = 0;

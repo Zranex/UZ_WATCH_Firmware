@@ -77,13 +77,15 @@ void AppNotifications::show(const char* sender, const char* message, const std::
     if (!container) return;
 
     current_banner_notif_id = notif_id;
-    lv_label_set_text(title_label, sender);
-    lv_label_set_text(message_label, message);
+    if (title_label) lv_label_set_text(title_label, sender ? sender : "");
+    if (message_label) lv_label_set_text(message_label, message ? message : "");
 
-    if (!notif_id.empty()) {
-        lv_obj_clear_flag(reply_btn, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_add_flag(reply_btn, LV_OBJ_FLAG_HIDDEN);
+    if (reply_btn) {
+        if (!notif_id.empty()) {
+            lv_obj_clear_flag(reply_btn, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(reply_btn, LV_OBJ_FLAG_HIDDEN);
+        }
     }
 
     // Slide down animation

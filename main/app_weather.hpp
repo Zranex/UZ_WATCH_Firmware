@@ -28,6 +28,8 @@ private:
     lv_obj_t* _label_condition;
     lv_obj_t* _btn_refresh;
     lv_obj_t* _label_refresh;
+    lv_obj_t* _label_card_icon[3] = {nullptr};
+    lv_obj_t* _label_card_mm[3] = {nullptr};
 
     std::string _current_city = "Bekleniyor...";
     std::string _current_temp = "--";

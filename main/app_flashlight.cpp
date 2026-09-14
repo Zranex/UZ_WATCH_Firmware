@@ -85,6 +85,7 @@ bool AppFlashlight::close() {
 }
 
 void AppFlashlight::set_light(bool on) {
+    if (!_bg_obj || !_lbl_toggle) return;
     _is_on = on;
     if (_is_on) {
         lv_obj_set_style_bg_color(_bg_obj, lv_color_hex(0xFFFFFF), 0);

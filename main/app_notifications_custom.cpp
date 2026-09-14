@@ -111,6 +111,7 @@ bool AppNotificationsCustom::close() {
         lv_obj_del(_bg_obj);
         _bg_obj = nullptr;
         list_container = nullptr;
+        btn_clear = nullptr;
     }
     return true;
 }

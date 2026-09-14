@@ -22,6 +22,10 @@ AppWeather::AppWeather() : esp_brookesia::systems::phone::App("Hava Durumu", &ic
     _label_condition = nullptr;
     _btn_refresh = nullptr;
     _label_refresh = nullptr;
+    for (int i = 0; i < 3; i++) {
+        _label_card_icon[i] = nullptr;
+        _label_card_mm[i] = nullptr;
+    }
     _is_fetching = false;
     _instance = this;
 }
@@ -76,7 +80,7 @@ void AppWeather::fetch_weather_via_wifi() {
     if (_label_condition) {
         lv_label_set_text(_label_condition, "Wi-Fi: Guncelleniyor...");
     }
-    xTaskCreate(weather_http_task, "weather_fetch", 4096, this, 3, NULL);
+    xTaskCreate(weather_http_task, "weather_fetch", 6144, this, 3, NULL);
 }
 
 void AppWeather::weather_http_task(void* pvParameters) {
@@ -241,21 +245,21 @@ bool AppWeather::run() {
         lv_label_set_text(l_day, days[i]);
         lv_obj_align(l_day, LV_ALIGN_TOP_MID, 0, 5);
 
-        lv_obj_t* l_icon = lv_label_create(card);
-        lv_obj_set_style_text_font(l_icon, &lv_font_montserrat_16, 0);
-        lv_obj_set_style_text_color(l_icon, lv_color_hex(0xFABD04), 0);
-        lv_label_set_text(l_icon, short_cond(cc[i]));
-        lv_obj_align(l_icon, LV_ALIGN_CENTER, 0, 0);
+        _label_card_icon[i] = lv_label_create(card);
+        lv_obj_set_style_text_font(_label_card_icon[i], &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(_label_card_icon[i], lv_color_hex(0xFABD04), 0);
+        lv_label_set_text(_label_card_icon[i], short_cond(cc[i]));
+        lv_obj_align(_label_card_icon[i], LV_ALIGN_CENTER, 0, 0);
 
-        lv_obj_t* l_mm = lv_label_create(card);
-        lv_obj_set_style_text_font(l_mm, &lv_font_montserrat_16, 0);
-        lv_obj_set_style_text_color(l_mm, lv_color_hex(0x9AA0A6), 0);
-        lv_label_set_text(l_mm, mm[i].c_str());
-        lv_obj_align(l_mm, LV_ALIGN_BOTTOM_MID, 0, -5);
+        _label_card_mm[i] = lv_label_create(card);
+        lv_obj_set_style_text_font(_label_card_mm[i], &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(_label_card_mm[i], lv_color_hex(0x9AA0A6), 0);
+        lv_label_set_text(_label_card_mm[i], mm[i].c_str());
+        lv_obj_align(_label_card_mm[i], LV_ALIGN_BOTTOM_MID, 0, -5);
     }
 
-    // If Wi-Fi is connected, automatically initiate a fetch
-    if (wifi_manager_is_connected()) {
+    // Only auto-fetch on open if Wi-Fi is connected and we don't have weather data yet
+    if (wifi_manager_is_connected() && !_is_fetching && _current_temp == "--") {
         fetch_weather_via_wifi();
     }
 
@@ -275,6 +279,10 @@ bool AppWeather::close() {
         _label_condition = nullptr;
         _btn_refresh = nullptr;
         _label_refresh = nullptr;
+        for (int i = 0; i < 3; i++) {
+            _label_card_icon[i] = nullptr;
+            _label_card_mm[i] = nullptr;
+        }
     }
     return true;
 }
@@ -301,8 +309,20 @@ void AppWeather::update_advanced_weather(const char* city, const char* temp, con
     _day2 = d2;
 
     if (_bg_obj) {
-        close();
-        run(); // re-render entirely to update cards
+        if (_label_city) lv_label_set_text(_label_city, _current_city.c_str());
+        if (_label_temp) lv_label_set_text_fmt(_label_temp, "%s C", _current_temp.c_str());
+        if (_label_condition) lv_label_set_text(_label_condition, _current_condition.c_str());
+
+        std::string m0, c0, m1, c1, m2, c2;
+        parse_day(_day0, m0, c0);
+        parse_day(_day1, m1, c1);
+        parse_day(_day2, m2, c2);
+        std::string mm[] = {m0, m1, m2};
+        std::string cc[] = {c0, c1, c2};
+        for (int i = 0; i < 3; i++) {
+            if (_label_card_icon[i]) lv_label_set_text(_label_card_icon[i], short_cond(cc[i]));
+            if (_label_card_mm[i]) lv_label_set_text(_label_card_mm[i], mm[i].c_str());
+        }
     }
 }
 

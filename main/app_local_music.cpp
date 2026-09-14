@@ -49,7 +49,7 @@ void AppLocalMusic::play_song_by_name(const char* name) {
                 xTaskCreate(audio_task, "local_audio_task", 4096, this, 4, &_audio_task_handle);
             }
             
-            if (bsp_display_lock(0)) {
+            if (bsp_display_lock(100)) {
                 update_play_button_text();
                 bsp_display_unlock();
             }
@@ -256,7 +256,7 @@ void AppLocalMusic::play_prev() {
 }
 
 bool AppLocalMusic::back() {
-    return true;
+    return close();
 }
 
 bool AppLocalMusic::close() {

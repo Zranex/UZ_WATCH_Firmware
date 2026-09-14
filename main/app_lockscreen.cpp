@@ -28,7 +28,7 @@ void AppLockscreen::anim_deleted_cb(lv_anim_t * a) {
 }
 
 void AppLockscreen::timer_cb(lv_timer_t * t) {
-    if (!lock_scr) return;
+    if (!lock_scr || !label_hour || !label_minute || !label_second || !label_date) return;
 
     struct tm timeinfo;
     if (rtc_get_time(&timeinfo) == ESP_OK) {
@@ -70,6 +70,10 @@ void AppLockscreen::event_cb(lv_event_t * e) {
             if (lock_scr) {
                 lv_obj_delete(lock_scr);
                 lock_scr = nullptr;
+                label_hour = nullptr;
+                label_minute = nullptr;
+                label_second = nullptr;
+                label_date = nullptr;
             }
         }
     }

@@ -229,11 +229,11 @@ void AppMediaPlayer::on_btn_play_clicked(lv_event_t* e) {
     if (app->_current_state == "PLAYING") {
         app->_current_state = "PAUSED";
         app->send_media_command("PAUSE");
-        lv_label_set_text(app->_label_play_icon, LV_SYMBOL_PLAY);
+        if (app->_label_play_icon) lv_label_set_text(app->_label_play_icon, LV_SYMBOL_PLAY);
     } else {
         app->_current_state = "PLAYING";
         app->send_media_command("PLAY");
-        lv_label_set_text(app->_label_play_icon, LV_SYMBOL_PAUSE);
+        if (app->_label_play_icon) lv_label_set_text(app->_label_play_icon, LV_SYMBOL_PAUSE);
     }
 }
 

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "esp_brookesia.hpp"
 #include <vector>
 #include <string>
@@ -8,6 +8,7 @@ using namespace esp_brookesia;
 class AppAgenda : public esp_brookesia::systems::phone::App {
 public:
     AppAgenda() : esp_brookesia::systems::phone::App("Ajanda & Gorevler", nullptr, true) {
+        init();
     }
     virtual ~AppAgenda() {}
     

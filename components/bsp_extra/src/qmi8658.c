@@ -52,11 +52,11 @@ esp_err_t qmi8658_init(void) {
         return ESP_FAIL;
     }
 
-    // Configure QMI8658
+    // Configure QMI8658 (Ultra-Low Power Mode: Accelerometer only, Gyroscope disabled)
     qmi_write_reg(QMI8658_CTRL1, 0x40); // Address Auto-Increment
     qmi_write_reg(QMI8658_CTRL2, 0x01); // Accel Enable, 2g, 125Hz
-    qmi_write_reg(QMI8658_CTRL3, 0x01); // Gyro Enable, 125dps, 125Hz
-    qmi_write_reg(QMI8658_CTRL7, 0x03); // Enable Accel & Gyro
+    qmi_write_reg(QMI8658_CTRL3, 0x00); // Gyroscope Disabled (Saves ~3.5mA continuous battery)
+    qmi_write_reg(QMI8658_CTRL7, 0x01); // Enable Accelerometer ONLY (Bit 0=1, Bit 1=0)
     
     ESP_LOGI(TAG, "QMI8658 initialized successfully");
     return ESP_OK;

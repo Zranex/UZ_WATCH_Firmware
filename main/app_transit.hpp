@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "esp_brookesia.hpp"
 #include "lvgl.h"
@@ -17,6 +17,7 @@ public:
     void update_route(int index, const char* time_str, const char* sub_str);
     void request_refresh();
     void compute_offline_estimates();
+    static void force_close();
     static AppTransit* get_instance() { return _instance; }
 
 private:

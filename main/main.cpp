@@ -196,6 +196,7 @@ extern "C" void app_main(void)
         }
         if (bsp_display_lock(1000)) {
             AppMediaPlayer::force_close();
+            AppTransit::force_close();
             bsp_display_unlock();
         }
     });

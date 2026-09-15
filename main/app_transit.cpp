@@ -8,6 +8,7 @@ extern "C" {
 #include "ble_manager.h"
 #include "wifi_manager.h"
 #include "rtc_lib.h"
+#include "display_manager.h"
 }
 
 // C Wrapper for LVGL display lock
@@ -174,7 +175,9 @@ void AppTransit::transit_wifi_task(void* pvParameters) {
 
 bool AppTransit::run() {
     ESP_LOGI(TAG, "AppTransit::run()");
-    if (_bg_obj != nullptr) return true;
+    if (_bg_obj != nullptr) {
+        close();
+    }
 
     _bg_obj = lv_obj_create(lv_scr_act());
     lv_obj_set_size(_bg_obj, LV_PCT(100), LV_PCT(100));
@@ -288,6 +291,12 @@ bool AppTransit::back() {
     return close();
 }
 
+void AppTransit::force_close() {
+    if (_instance) {
+        _instance->close();
+    }
+}
+
 bool AppTransit::close() {
     ESP_LOGI(TAG, "AppTransit::close()");
     if (_bg_obj != nullptr) {
@@ -312,7 +321,7 @@ void AppTransit::update_route(int index, const char* time_str, const char* sub_s
     if (time_str) _routes[index].current_time = time_str;
     if (sub_str) _routes[index].current_sub = sub_str;
 
-    if (_bg_obj) {
+    if (_bg_obj && display_manager_is_on()) {
         if (_routes[index].lbl_time && time_str) {
             lv_label_set_text(_routes[index].lbl_time, time_str);
         }
@@ -338,19 +347,33 @@ extern "C" void app_transit_update_from_ble(const char* payload) {
 
     char* token = strtok(buf, "|");
     int index = 0;
+    char* times[4] = {nullptr};
     while (token != NULL && index < 4) {
         char* colon = strchr(token, ':');
         if (colon) {
             *colon = '\0';
-            char* time_val = colon + 1;
-            if (bsp_display_lock(100)) {
-                if (AppTransit::get_instance()) {
-                    AppTransit::get_instance()->update_route(index, time_val, "Canli Takip");
-                }
-                bsp_display_unlock();
-            }
+            times[index] = colon + 1;
         }
         token = strtok(NULL, "|");
         index++;
+    }
+
+    if (AppTransit::get_instance()) {
+        bool is_disp_on = display_manager_is_on();
+        if (!is_disp_on) {
+            // Display is asleep -> update in-memory cache ONLY, DO NOT touch LVGL!
+            for (int i = 0; i < 4; i++) {
+                if (times[i]) {
+                    AppTransit::get_instance()->update_route(i, times[i], "Canli Takip");
+                }
+            }
+        } else if (bsp_display_lock(500)) {
+            for (int i = 0; i < 4; i++) {
+                if (times[i]) {
+                    AppTransit::get_instance()->update_route(i, times[i], "Canli Takip");
+                }
+            }
+            bsp_display_unlock();
+        }
     }
 }

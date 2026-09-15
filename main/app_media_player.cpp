@@ -126,7 +126,7 @@ bool AppMediaPlayer::back() {
 }
 
 void AppMediaPlayer::force_close() {
-    if (_instance) {
+    if (_instance && _instance->_bg_obj != nullptr) {
         _instance->notifyCoreClosed();
     }
 }

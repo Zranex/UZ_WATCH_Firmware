@@ -102,7 +102,7 @@ bool AppNotificationsCustom::run() {
 }
 
 bool AppNotificationsCustom::back() {
-    return close();
+    return notifyCoreClosed();
 }
 
 bool AppNotificationsCustom::close() {

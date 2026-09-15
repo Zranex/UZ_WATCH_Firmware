@@ -256,7 +256,7 @@ void AppLocalMusic::play_prev() {
 }
 
 bool AppLocalMusic::back() {
-    return close();
+    return notifyCoreClosed();
 }
 
 bool AppLocalMusic::close() {

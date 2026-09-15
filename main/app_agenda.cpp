@@ -45,7 +45,7 @@ bool AppAgenda::run() {
 }
 
 bool AppAgenda::back() {
-    return close();
+    return notifyCoreClosed();
 }
 
 bool AppAgenda::close() {

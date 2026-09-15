@@ -61,7 +61,7 @@ bool AppFlashlight::run() {
 }
 
 bool AppFlashlight::back() {
-    return close();
+    return notifyCoreClosed();
 }
 
 bool AppFlashlight::close() {

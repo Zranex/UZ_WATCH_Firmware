@@ -295,7 +295,7 @@ bool AppSmartHome::run() {
 }
 
 bool AppSmartHome::back() {
-    return close();
+    return notifyCoreClosed();
 }
 
 bool AppSmartHome::close() {

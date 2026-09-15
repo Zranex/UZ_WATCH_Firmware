@@ -22,7 +22,6 @@ public:
 
 private:
     static void on_refresh_clicked(lv_event_t* e);
-    static void transit_wifi_task(void* pvParameters);
 
     lv_obj_t* _bg_obj;
     lv_obj_t* _lbl_title;

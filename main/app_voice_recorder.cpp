@@ -106,7 +106,7 @@ bool AppVoiceRecorder::run() {
 }
 
 bool AppVoiceRecorder::back() {
-    return close();
+    return notifyCoreClosed();
 }
 
 bool AppVoiceRecorder::close() {

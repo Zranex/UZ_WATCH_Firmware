@@ -70,7 +70,7 @@ bool AppActivity::run() {
 }
 
 bool AppActivity::back() {
-    return close();
+    return notifyCoreClosed();
 }
 
 bool AppActivity::close() {

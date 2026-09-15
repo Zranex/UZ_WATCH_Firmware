@@ -95,7 +95,7 @@ bool AppWiFiTest::run() {
     return true;
 }
 
-bool AppWiFiTest::back() { return true; }
+bool AppWiFiTest::back() { return notifyCoreClosed(); }
 bool AppWiFiTest::close() {
     if (_timer) {
         lv_timer_del(_timer);

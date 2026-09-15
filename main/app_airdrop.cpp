@@ -57,7 +57,7 @@ bool AppAirDrop::run() {
 }
 
 bool AppAirDrop::back() {
-    return close();
+    return notifyCoreClosed();
 }
 
 bool AppAirDrop::close() {

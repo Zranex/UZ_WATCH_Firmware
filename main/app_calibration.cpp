@@ -67,7 +67,7 @@ bool AppCalibration::close() {
 }
 
 bool AppCalibration::back() {
-    return close();
+    return notifyCoreClosed();
 }
 
 void AppCalibration::on_calibrate_btn_clicked(lv_event_t* e) {

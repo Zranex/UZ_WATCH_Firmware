@@ -50,7 +50,7 @@ bool AppFindPhone::run() {
 }
 
 bool AppFindPhone::back() {
-    return close();
+    return notifyCoreClosed();
 }
 
 bool AppFindPhone::close() {

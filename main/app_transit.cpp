@@ -148,35 +148,13 @@ void AppTransit::request_refresh() {
 
     // 2. Request from Android Companion App via BLE (works anywhere, even outside!)
     ble_manager_send_media_command("TRANSIT_REQ");
-
-    // 3. If Wi-Fi is active and connected, fetch via Wi-Fi task asynchronously
-    if (wifi_manager_is_connected() && !_is_fetching) {
-        _is_fetching = true;
-        xTaskCreate(transit_wifi_task, "transit_wifi", 4096, this, 3, NULL);
-    }
-}
-
-void AppTransit::transit_wifi_task(void* pvParameters) {
-    AppTransit* app = (AppTransit*)pvParameters;
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    // Wi-Fi live update simulation / endpoint
-    if (bsp_display_lock(100)) {
-        if (app && app->_bg_obj) {
-            if (app->_lbl_status) {
-                lv_label_set_text(app->_lbl_status, "Canli Veri (Guncel)");
-                lv_obj_set_style_text_color(app->_lbl_status, lv_color_hex(0x00E676), 0);
-            }
-        }
-        bsp_display_unlock();
-    }
-    if (app) app->_is_fetching = false;
-    vTaskDelete(NULL);
 }
 
 bool AppTransit::run() {
     ESP_LOGI(TAG, "AppTransit::run()");
     if (_bg_obj != nullptr) {
-        close();
+        lv_obj_del(_bg_obj);
+        _bg_obj = nullptr;
     }
 
     _bg_obj = lv_obj_create(lv_scr_act());
@@ -288,12 +266,13 @@ bool AppTransit::run() {
 }
 
 bool AppTransit::back() {
-    return close();
+    ESP_LOGI(TAG, "AppTransit::back() -> notifying core closed");
+    return notifyCoreClosed();
 }
 
 void AppTransit::force_close() {
     if (_instance) {
-        _instance->close();
+        _instance->notifyCoreClosed();
     }
 }
 

@@ -122,12 +122,12 @@ bool AppMediaPlayer::run() {
 }
 
 bool AppMediaPlayer::back() {
-    return close();
+    return notifyCoreClosed();
 }
 
 void AppMediaPlayer::force_close() {
     if (_instance) {
-        _instance->close();
+        _instance->notifyCoreClosed();
     }
 }
 

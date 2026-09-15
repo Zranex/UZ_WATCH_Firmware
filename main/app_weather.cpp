@@ -267,7 +267,7 @@ bool AppWeather::run() {
 }
 
 bool AppWeather::back() {
-    return close();
+    return notifyCoreClosed();
 }
 
 bool AppWeather::close() {

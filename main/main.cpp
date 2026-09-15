@@ -64,6 +64,7 @@ esp_codec_dev_handle_t spk_codec_dev = NULL;
 
 static void imu_task(void *pvParameter) {
     static bool was_tilted = false;
+    static int stable_tilt_count = 0;
     while(1) {
         bool is_display_on = display_manager_is_on();
         
@@ -77,23 +78,32 @@ static void imu_task(void *pvParameter) {
             float dz = acc.z - bz;
             float dist_sq = dx*dx + dy*dy + dz*dz;
             
-            // Edge-triggered: Only wake when transitioning from NOT tilted to TILTED
-            if (dist_sq < 0.25f) {
+            // Tightened threshold: radius <= 0.40G (0.16f dist_sq) instead of 0.50G (0.25f)
+            // Stillness verification: requires wrist to stay in viewing angle for >= 2 consecutive samples (~500ms)
+            // Eliminates false triggers while walking, writing with pen, or carrying a backpack at school
+            if (dist_sq < 0.16f) {
                 if (!was_tilted) {
-                    was_tilted = true;
-                    if (!is_display_on) {
-                        display_manager_turn_on();
-                        ESP_UTILS_LOGI("Wrist tilt edge detected! Display ON.");
+                    stable_tilt_count++;
+                    if (stable_tilt_count >= 2) {
+                        was_tilted = true;
+                        stable_tilt_count = 0;
+                        if (!is_display_on) {
+                            display_manager_turn_on();
+                            ESP_UTILS_LOGI("Wrist tilt stable viewing confirmed! Display ON.");
+                        }
                     }
                 }
-            } else if (dist_sq > 0.40f) {
+            } else if (dist_sq > 0.32f) {
                 // Hysteresis: arm has moved away from viewing position
                 was_tilted = false;
+                stable_tilt_count = 0;
+            } else {
+                stable_tilt_count = 0;
             }
         }
         
-        // Low power delay: 350ms when screen off, 150ms when screen on
-        vTaskDelay(pdMS_TO_TICKS(is_display_on ? 150 : 350));
+        // Low power delay: 250ms when screen off, 200ms when screen on
+        vTaskDelay(pdMS_TO_TICKS(is_display_on ? 200 : 250));
     }
 }
 
@@ -309,14 +319,7 @@ extern "C" void app_main(void)
 
     ESP_UTILS_LOGI("UZ WATCH v3 - Sistem Hazir!");
     ble_manager_init();
-
-    // Wi-Fi otomatik baglanti: Acilistan 1.5 saniye sonra arka planda TurkTelekom'a baglan
-    xTaskCreate([](void*) {
-        vTaskDelay(pdMS_TO_TICKS(1500));
-        ESP_UTILS_LOGI("Boot auto-starting Wi-Fi...");
-        wifi_manager_start();
-        vTaskDelete(NULL);
-    }, "wifi_boot", 6144, NULL, 3, NULL);
+    // Wi-Fi is strictly on-demand (Settings/AirDrop) to achieve 10-12+ hour battery life
 }
 
 

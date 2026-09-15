@@ -1,4 +1,4 @@
-﻿#include "app_transit.hpp"
+#include "app_transit.hpp"
 #include "esp_lib_utils.h"
 #include "esp_log.h"
 #include <stdio.h>
@@ -14,12 +14,14 @@ extern "C" {
 extern "C" bool bsp_display_lock(uint32_t timeout_ms);
 extern "C" void bsp_display_unlock(void);
 
+extern const lv_image_dsc_t icon_transit;
+
 #define TAG "AppTransit"
 
 AppTransit* AppTransit::_instance = nullptr;
 
 AppTransit::AppTransit() 
-    : esp_brookesia::systems::phone::App("Ulasim", nullptr, true),
+    : esp_brookesia::systems::phone::App("Ulasim", &icon_transit, true),
       _bg_obj(nullptr), _lbl_title(nullptr), _lbl_status(nullptr),
       _btn_refresh(nullptr), _lbl_refresh(nullptr), _is_fetching(false)
 {

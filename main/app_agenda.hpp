@@ -5,9 +5,11 @@
 
 using namespace esp_brookesia;
 
+extern const lv_image_dsc_t icon_notifications;
+
 class AppAgenda : public esp_brookesia::systems::phone::App {
 public:
-    AppAgenda() : esp_brookesia::systems::phone::App("Ajanda & Gorevler", nullptr, true) {
+    AppAgenda() : esp_brookesia::systems::phone::App("Ajanda & Gorevler", &icon_notifications, true) {
         init();
     }
     virtual ~AppAgenda() {}

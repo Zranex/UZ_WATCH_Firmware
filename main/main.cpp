@@ -67,6 +67,11 @@ static void imu_task(void *pvParameter) {
     static int stable_tilt_count = 0;
     while(1) {
         bool is_display_on = display_manager_is_on();
+        if (is_display_on) {
+            // Screen is already ON: skip IMU math and sleep to save CPU power
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
         
         qmi8658_acc_t acc;
         if (pedometer_get_latest_acc(&acc) == ESP_OK) {
@@ -78,19 +83,14 @@ static void imu_task(void *pvParameter) {
             float dz = acc.z - bz;
             float dist_sq = dx*dx + dy*dy + dz*dz;
             
-            // Tightened threshold: radius <= 0.40G (0.16f dist_sq) instead of 0.50G (0.25f)
-            // Stillness verification: requires wrist to stay in viewing angle for >= 2 consecutive samples (~500ms)
-            // Eliminates false triggers while walking, writing with pen, or carrying a backpack at school
             if (dist_sq < 0.16f) {
                 if (!was_tilted) {
                     stable_tilt_count++;
                     if (stable_tilt_count >= 2) {
                         was_tilted = true;
                         stable_tilt_count = 0;
-                        if (!is_display_on) {
-                            display_manager_turn_on();
-                            ESP_UTILS_LOGI("Wrist tilt stable viewing confirmed! Display ON.");
-                        }
+                        display_manager_turn_on();
+                        ESP_UTILS_LOGI("Wrist tilt stable viewing confirmed! Display ON.");
                     }
                 }
             } else if (dist_sq > 0.32f) {
@@ -102,8 +102,8 @@ static void imu_task(void *pvParameter) {
             }
         }
         
-        // Low power delay: 250ms when screen off, 200ms when screen on
-        vTaskDelay(pdMS_TO_TICKS(is_display_on ? 200 : 250));
+        // 250ms interval while screen is off for responsive wrist-wake
+        vTaskDelay(pdMS_TO_TICKS(250));
     }
 }
 
@@ -180,6 +180,7 @@ extern "C" void app_main(void)
     display_manager_init();
     
     display_manager_set_wake_cb([]() {
+        pedometer_set_low_power(false);
         if (wifi_manager_is_active()) {
             esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
         }
@@ -191,6 +192,7 @@ extern "C" void app_main(void)
     });
 
     display_manager_set_sleep_cb([]() {
+        pedometer_set_low_power(true);
         if (wifi_manager_is_active()) {
             esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
         }

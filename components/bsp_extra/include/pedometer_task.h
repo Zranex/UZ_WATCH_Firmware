@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -30,6 +31,11 @@ void pedometer_reset_steps(void);
  * @brief Get the latest accelerometer reading without an extra I2C transaction
  */
 esp_err_t pedometer_get_latest_acc(qmi8658_acc_t *acc);
+
+/**
+ * @brief Set pedometer sampling rate to low-power mode (100ms instead of 50ms)
+ */
+void pedometer_set_low_power(bool enable);
 
 #ifdef __cplusplus
 }

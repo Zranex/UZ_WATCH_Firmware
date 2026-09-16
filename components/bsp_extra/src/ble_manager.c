@@ -1,6 +1,7 @@
 #include "ble_manager.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "host/ble_hs.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
@@ -26,7 +27,7 @@ static const ble_uuid16_t notif_chr_uuid = BLE_UUID16_INIT(0xFF04);
 
 static uint16_t media_cmd_handle;
 static uint16_t ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-static bool s_ble_active = true;
+static bool s_ble_active = false; // Default OFF for power saving
 static void ble_app_advertise(void);
 
 static int ble_time_chr_access(uint16_t conn_handle, uint16_t attr_handle,
@@ -289,6 +290,14 @@ void ble_manager_set_active(bool enable)
     if (s_ble_active == enable) return;
     s_ble_active = enable;
 
+    nvs_handle_t nvs_h;
+    if (nvs_open("settings", NVS_READWRITE, &nvs_h) == ESP_OK) {
+        nvs_set_u8(nvs_h, "ble_en", enable ? 1 : 0);
+        nvs_commit(nvs_h);
+        nvs_close(nvs_h);
+        ESP_LOGI(TAG, "Saved BLE state to NVS: %d", enable ? 1 : 0);
+    }
+
     if (!enable) {
         ESP_LOGI(TAG, "Disabling BLE (Radio sleep/power save)...");
         if (ble_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
@@ -298,7 +307,7 @@ void ble_manager_set_active(bool enable)
         ble_gap_adv_stop();
         ESP_LOGI(TAG, "BLE advertising stopped.");
     } else {
-        ESP_LOGI(TAG, "Enabling BLE...");
+        ESP_LOGI(TAG, "Enabling BLE advertising...");
         ble_app_advertise();
     }
 }
@@ -316,6 +325,8 @@ static void ble_app_on_sync(void)
 
     if (s_ble_active) {
         ble_app_advertise();
+    } else {
+        ESP_LOGI(TAG, "BLE disabled by default in NVS. RF radio staying idle.");
     }
 }
 
@@ -336,6 +347,21 @@ esp_err_t ble_manager_init(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    // Read stored BLE enable state from NVS (default: 0 = OFF)
+    nvs_handle_t nvs_h;
+    uint8_t ble_en = 0;
+    if (nvs_open("settings", NVS_READWRITE, &nvs_h) == ESP_OK) {
+        if (nvs_get_u8(nvs_h, "ble_en", &ble_en) == ESP_OK) {
+            s_ble_active = (ble_en == 1);
+        } else {
+            s_ble_active = false;
+        }
+        nvs_close(nvs_h);
+    } else {
+        s_ble_active = false;
+    }
+    ESP_LOGI(TAG, "BLE power state loaded: %s", s_ble_active ? "ENABLED" : "DISABLED (Power Saving)");
 
     nimble_port_init();
 

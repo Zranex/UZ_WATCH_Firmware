@@ -124,6 +124,16 @@ void AppTransit::compute_offline_estimates() {
     }
 }
 
+void AppTransit::refresh_ui_if_visible() {
+    compute_offline_estimates();
+    if (_bg_obj && display_manager_is_on()) {
+        for (int i = 0; i < 4; i++) {
+            if (_routes[i].lbl_time) lv_label_set_text(_routes[i].lbl_time, _routes[i].current_time.c_str());
+            if (_routes[i].lbl_sub) lv_label_set_text(_routes[i].lbl_sub, _routes[i].current_sub.c_str());
+        }
+    }
+}
+
 static void on_back_clicked(lv_event_t* e) {
     AppTransit* app = (AppTransit*)lv_event_get_user_data(e);
     if (app) {
@@ -235,7 +245,7 @@ bool AppTransit::run() {
     lv_obj_set_style_pad_row(list, 10, 0);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_add_flag(list, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
 
     // Create 4 Route Cards
     for (int i = 0; i < 4; i++) {

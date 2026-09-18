@@ -17,6 +17,7 @@ public:
     void update_route(int index, const char* time_str, const char* sub_str);
     void request_refresh();
     void compute_offline_estimates();
+    void refresh_ui_if_visible();
     void request_close() { notifyCoreClosed(); }
     static void force_close();
     static AppTransit* get_instance() { return _instance; }

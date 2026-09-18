@@ -53,6 +53,8 @@ using namespace esp_brookesia::systems::phone;
 // Global audio codec handle
 esp_codec_dev_handle_t spk_codec_dev = NULL;
 
+static Phone* g_phone = nullptr;
+
 #define LVGL_PORT_INIT_CONFIG() \
     {                               \
         .task_priority = 4,       \
@@ -200,7 +202,13 @@ extern "C" void app_main(void)
         }
         if (bsp_display_lock(1000)) {
             lv_disp_trig_activity(NULL);
-            AppLockscreen::show_again();
+            // If an app is active in Brookesia, remain in that app without disrupting UI!
+            // Only show the lockscreen if on the home screen / watchface.
+            if (g_phone && g_phone->getManager().getActiveApp() == nullptr) {
+                AppLockscreen::show_again();
+            } else if (AppTransit::get_instance()) {
+                AppTransit::get_instance()->refresh_ui_if_visible();
+            }
             bsp_display_unlock();
         }
     });
@@ -219,6 +227,7 @@ extern "C" void app_main(void)
     /* 5. Phone nesnesi */
     Phone* phone = new (std::nothrow) Phone();
     ESP_UTILS_CHECK_NULL_EXIT(phone, "Create phone failed");
+    g_phone = phone;
 
     /* 6. Stylesheet */
     Stylesheet* stylesheet = new (std::nothrow) Stylesheet(STYLESHEET_410_502_DARK);

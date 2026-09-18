@@ -165,6 +165,12 @@ static void display_manager_task(void *arg) {
             TickType_t now_tick = xTaskGetTickCount();
             if (((now_tick - s_last_sleep_tick) * portTICK_PERIOD_MS > 350) && gpio_get_level(TOUCH_INT_PIN) == 0) {
                 ESP_LOGI(TAG, "Touch INT detected! Waking up display.");
+                // Wait for wake touch to release so it doesn't cause stray clicks or drag animations
+                int release_wait = 0;
+                while (gpio_get_level(TOUCH_INT_PIN) == 0 && release_wait < 20) {
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                    release_wait++;
+                }
                 display_manager_turn_on();
             }
             vTaskDelay(pdMS_TO_TICKS(30));

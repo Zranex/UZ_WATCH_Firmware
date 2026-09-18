@@ -285,6 +285,36 @@ bool ble_manager_is_active(void)
     return s_ble_active;
 }
 
+static void ble_app_on_sync(void);
+static void ble_host_task(void *param);
+static bool s_nimble_started = false;
+
+static void start_nimble_stack(void)
+{
+    if (s_nimble_started) return;
+    ESP_LOGI(TAG, "Starting NimBLE Controller and Host stack...");
+    nimble_port_init();
+
+    // Initialize GATT server
+    ble_svc_gap_init();
+    ble_svc_gatt_init();
+    
+    int rc = ble_gatts_count_cfg(gatt_svcs);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Failed to configure GATT services, rc=%d", rc);
+    }
+    
+    rc = ble_gatts_add_svcs(gatt_svcs);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Failed to add GATT services, rc=%d", rc);
+    }
+
+    ble_hs_cfg.sync_cb = ble_app_on_sync;
+    
+    nimble_port_freertos_init(ble_host_task);
+    s_nimble_started = true;
+}
+
 void ble_manager_set_active(bool enable)
 {
     if (s_ble_active == enable) return;
@@ -307,8 +337,12 @@ void ble_manager_set_active(bool enable)
         ble_gap_adv_stop();
         ESP_LOGI(TAG, "BLE advertising stopped.");
     } else {
-        ESP_LOGI(TAG, "Enabling BLE advertising...");
-        ble_app_advertise();
+        ESP_LOGI(TAG, "Enabling BLE...");
+        if (!s_nimble_started) {
+            start_nimble_stack();
+        } else {
+            ble_app_advertise();
+        }
     }
 }
 
@@ -363,28 +397,11 @@ esp_err_t ble_manager_init(void)
     }
     ESP_LOGI(TAG, "BLE power state loaded: %s", s_ble_active ? "ENABLED" : "DISABLED (Power Saving)");
 
-    nimble_port_init();
-
-    // Initialize GATT server
-    ble_svc_gap_init();
-    ble_svc_gatt_init();
-    
-    int rc = ble_gatts_count_cfg(gatt_svcs);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "Failed to configure GATT services, rc=%d", rc);
+    if (s_ble_active) {
+        start_nimble_stack();
+    } else {
+        ESP_LOGI(TAG, "BLE is disabled by default. NimBLE controller NOT started (0 RF power, PM lock released).");
     }
-    
-    rc = ble_gatts_add_svcs(gatt_svcs);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "Failed to add GATT services, rc=%d", rc);
-    }
-
-    ble_hs_cfg.sync_cb = ble_app_on_sync;
-    
-    // Set MTU for large strings if needed
-    // ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO; // No auth
-    
-    nimble_port_freertos_init(ble_host_task);
     return ESP_OK;
 }
 

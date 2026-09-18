@@ -118,7 +118,109 @@ static esp_err_t upload_post_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+static const char s_airdrop_index_html[] = 
+"<!DOCTYPE html><html><head><meta charset='utf-8'>"
+"<meta name='viewport' content='width=device-width,initial-scale=1'>"
+"<title>UZ WATCH AirDrop</title><style>"
+"body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#121212;color:#fff;margin:0;padding:20px;text-align:center}"
+"h1{color:#00e676;margin-bottom:5px}p{color:#aaa;font-size:14px}"
+".card{background:#1e1e1e;border-radius:12px;padding:20px;margin:15px auto;max-width:400px;border:1px solid #333}"
+"input[type=file]{margin:15px 0;color:#ccc;width:100%}"
+"button{background:#00e676;color:#000;border:none;padding:12px 24px;border-radius:8px;font-size:16px;font-weight:bold;cursor:pointer;width:100%}"
+"button:hover{background:#00c853}#status{margin-top:15px;font-weight:bold;color:#00e676}"
+".files{text-align:left;margin-top:20px}"
+".file-item{background:#252525;padding:10px 15px;border-radius:8px;margin:8px 0;display:flex;justify-content:space-between;align-items:center}"
+".file-name{word-break:break-all;font-size:14px}a.dl{color:#00e676;text-decoration:none;font-weight:bold;margin-left:10px}"
+"</style></head><body><h1>UZ WATCH AirDrop</h1><p>Kablosuz Dosya Transfer Portali</p>"
+"<div class='card'><h3>Saate Dosya Yukle</h3><input type='file' id='fileInput'><br>"
+"<button onclick='uploadFile()'>Saate Gonder</button><div id='status'></div></div>"
+"<div class='card files'><h3>Saatteki Dosyalar (/AirDrop)</h3><div id='fileList'>Yukleniyor...</div></div>"
+"<script>"
+"function loadFiles(){fetch('/list').then(r=>r.json()).then(files=>{"
+"let h='';if(files.length===0){h='<p style=\"color:#666\">Hic dosya yok</p>';}"
+"else{files.forEach(f=>{h+=`<div class='file-item'><span class='file-name'>${f.name}</span><a class='dl' href='/download?filename=${encodeURIComponent(f.name)}' download>Indir</a></div>`;});}"
+"document.getElementById('fileList').innerHTML=h;}).catch(e=>{document.getElementById('fileList').innerHTML='Dosya listesi alinamadi';});}"
+"function uploadFile(){let f=document.getElementById('fileInput').files[0];"
+"if(!f){alert('Lutfen bir dosya secin!');return;}"
+"let s=document.getElementById('status');s.innerText='Yukleniyor: '+f.name+'...';"
+"fetch('/upload?filename='+encodeURIComponent(f.name),{method:'POST',body:f})"
+".then(r=>{if(r.ok){s.innerText='Basariyla yuklendi!';loadFiles();}else{s.innerText='Hata olustu!';}})"
+".catch(e=>{s.innerText='Yukleme hatasi!';});}"
+"loadFiles();</script></body></html>";
+
+// 3. Download file (GET /download?filename=abc.txt)
+static esp_err_t download_get_handler(httpd_req_t *req) {
+    char filepath[256];
+    size_t buf_len = httpd_req_get_url_query_len(req) + 1;
+    if (buf_len > 1) {
+        char *buf = (char *)malloc(buf_len);
+        if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+            char param[64];
+            if (httpd_query_key_value(buf, "filename", param, sizeof(param)) == ESP_OK) {
+                snprintf(filepath, sizeof(filepath), "%s/%s", AIRDROP_BASE_PATH, param);
+            } else {
+                free(buf);
+                httpd_resp_send_404(req);
+                return ESP_FAIL;
+            }
+        }
+        free(buf);
+    } else {
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+    }
+
+    FILE *fd = fopen(filepath, "r");
+    if (!fd) {
+        ESP_LOGE(TAG, "Failed to open file for download: %s", filepath);
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "application/octet-stream");
+    char *chunk = (char *)malloc(2048);
+    if (!chunk) {
+        fclose(fd);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    size_t read_bytes;
+    while ((read_bytes = fread(chunk, 1, 2048, fd)) > 0) {
+        if (httpd_resp_send_chunk(req, chunk, read_bytes) != ESP_OK) {
+            fclose(fd);
+            free(chunk);
+            return ESP_FAIL;
+        }
+    }
+    fclose(fd);
+    free(chunk);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+// 4. Index page (GET /)
+static esp_err_t index_get_handler(httpd_req_t *req) {
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_sendstr(req, s_airdrop_index_html);
+    return ESP_OK;
+}
+
 // URIs
+static const httpd_uri_t uri_root = {
+    .uri       = "/",
+    .method    = HTTP_GET,
+    .handler   = index_get_handler,
+    .user_ctx  = NULL
+};
+
+static const httpd_uri_t uri_index = {
+    .uri       = "/index.html",
+    .method    = HTTP_GET,
+    .handler   = index_get_handler,
+    .user_ctx  = NULL
+};
+
 static const httpd_uri_t uri_list = {
     .uri       = "/list",
     .method    = HTTP_GET,
@@ -130,6 +232,13 @@ static const httpd_uri_t uri_upload = {
     .uri       = "/upload",
     .method    = HTTP_POST,
     .handler   = upload_post_handler,
+    .user_ctx  = NULL
+};
+
+static const httpd_uri_t uri_download = {
+    .uri       = "/download",
+    .method    = HTTP_GET,
+    .handler   = download_get_handler,
     .user_ctx  = NULL
 };
 
@@ -183,8 +292,11 @@ esp_err_t AirDropManager::start_server() {
 
     ESP_LOGI(TAG, "Starting AirDrop HTTP Server on port: '%d'", config.server_port);
     if (httpd_start(&server, &config) == ESP_OK) {
+        httpd_register_uri_handler(server, &uri_root);
+        httpd_register_uri_handler(server, &uri_index);
         httpd_register_uri_handler(server, &uri_list);
         httpd_register_uri_handler(server, &uri_upload);
+        httpd_register_uri_handler(server, &uri_download);
         _server_handle = (void*)server;
         return ESP_OK;
     }

@@ -17,6 +17,7 @@ public:
     void update_route(int index, const char* time_str, const char* sub_str);
     void request_refresh();
     void compute_offline_estimates();
+    void request_close() { notifyCoreClosed(); }
     static void force_close();
     static AppTransit* get_instance() { return _instance; }
 
@@ -24,6 +25,7 @@ private:
     static void on_refresh_clicked(lv_event_t* e);
 
     lv_obj_t* _bg_obj;
+    lv_obj_t* _btn_back;
     lv_obj_t* _lbl_title;
     lv_obj_t* _lbl_status;
     lv_obj_t* _btn_refresh;

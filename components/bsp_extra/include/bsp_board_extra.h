@@ -14,10 +14,11 @@ extern "C" {
 
 esp_err_t bsp_extra_init(void);
 
-// Battery Telemetry
+// Battery Telemetry & Power Rails
 esp_err_t bsp_battery_init(void);
 int bsp_battery_get_percent(void);
 bool bsp_battery_is_charging(void);
+esp_err_t bsp_pmu_set_amoled_power(bool enable);
 
 #ifdef __cplusplus
 }

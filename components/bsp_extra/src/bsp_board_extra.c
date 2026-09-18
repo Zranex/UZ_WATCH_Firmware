@@ -148,6 +148,28 @@ bool bsp_battery_is_charging(void) {
     return s_cached_battery_charging;
 }
 
+esp_err_t bsp_pmu_set_amoled_power(bool enable) {
+    if (!axp_dev_handle) return ESP_ERR_INVALID_STATE;
+    
+    uint8_t reg = 0x90; // LDOS ON/OFF control 0 (ALDO1-4, BLDO1-2, CPUSLDO, DLDO1)
+    uint8_t val = 0;
+    esp_err_t ret = i2c_master_transmit_receive(axp_dev_handle, &reg, 1, &val, 1, I2C_MASTER_TIMEOUT_MS);
+    if (ret != ESP_OK) return ret;
+    
+    if (enable) {
+        val |= (1 << 1); // Bit 1: ALDO2 Enable (DSI_PWR_EN)
+    } else {
+        val &= ~(1 << 1); // Bit 1: ALDO2 Disable (DSI_PWR_EN)
+    }
+    
+    uint8_t write_buf[2] = {0x90, val};
+    ret = i2c_master_transmit(axp_dev_handle, write_buf, 2, I2C_MASTER_TIMEOUT_MS);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "AXP2101 ALDO2 (AMOLED DSI_PWR_EN): %s", enable ? "ON" : "OFF");
+    }
+    return ret;
+}
+
 esp_err_t bsp_extra_init(void)
 {
     esp_err_t ret;

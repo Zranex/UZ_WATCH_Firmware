@@ -124,6 +124,14 @@ void AppTransit::compute_offline_estimates() {
     }
 }
 
+static void on_back_clicked(lv_event_t* e) {
+    AppTransit* app = (AppTransit*)lv_event_get_user_data(e);
+    if (app) {
+        ESP_LOGI(TAG, "Back button clicked -> closing transit app");
+        app->request_close();
+    }
+}
+
 void AppTransit::on_refresh_clicked(lv_event_t* e) {
     AppTransit* app = (AppTransit*)lv_event_get_user_data(e);
     if (app) {
@@ -136,18 +144,25 @@ void AppTransit::request_refresh() {
     
     // 1. Instant offline recalculation to provide instant feedback
     compute_offline_estimates();
-    if (_lbl_status) {
-        lv_label_set_text(_lbl_status, "Canli sorgulaniyor...");
-        lv_obj_set_style_text_color(_lbl_status, lv_color_hex(0xFFA000), 0);
-    }
     
     for (int i = 0; i < 4; i++) {
         if (_routes[i].lbl_time) lv_label_set_text(_routes[i].lbl_time, _routes[i].current_time.c_str());
         if (_routes[i].lbl_sub) lv_label_set_text(_routes[i].lbl_sub, _routes[i].current_sub.c_str());
     }
 
-    // 2. Request from Android Companion App via BLE (works anywhere, even outside!)
-    ble_manager_send_media_command("TRANSIT_REQ");
+    // 2. If BLE is active, request live data from Companion App; otherwise report offline active
+    if (ble_manager_is_active()) {
+        if (_lbl_status) {
+            lv_label_set_text(_lbl_status, "Canli sorgulaniyor...");
+            lv_obj_set_style_text_color(_lbl_status, lv_color_hex(0xFFA000), 0);
+        }
+        ble_manager_send_media_command("TRANSIT_REQ");
+    } else {
+        if (_lbl_status) {
+            lv_label_set_text(_lbl_status, "Cevrimdisi Tarife (Aktif)");
+            lv_obj_set_style_text_color(_lbl_status, lv_color_hex(0x29B6F6), 0); // Cyan / light blue
+        }
+    }
 }
 
 bool AppTransit::run() {
@@ -164,24 +179,40 @@ bool AppTransit::run() {
     lv_obj_set_style_radius(_bg_obj, 0, 0);
     lv_obj_clear_flag(_bg_obj, LV_OBJ_FLAG_SCROLLABLE);
 
+    // Top Header: Back Button (<)
+    _btn_back = lv_btn_create(_bg_obj);
+    lv_obj_set_size(_btn_back, 44, 44);
+    lv_obj_align(_btn_back, LV_ALIGN_TOP_LEFT, 15, 15);
+    lv_obj_set_style_radius(_btn_back, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(_btn_back, lv_color_hex(0x222222), 0);
+    lv_obj_set_style_border_color(_btn_back, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_border_width(_btn_back, 1, 0);
+    lv_obj_add_event_cb(_btn_back, on_back_clicked, LV_EVENT_CLICKED, this);
+
+    lv_obj_t* lbl_back = lv_label_create(_btn_back);
+    lv_obj_set_style_text_font(lbl_back, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(lbl_back, lv_color_hex(0xFFFFFF), 0);
+    lv_label_set_text(lbl_back, LV_SYMBOL_LEFT);
+    lv_obj_center(lbl_back);
+
     // Top Header: Title
     _lbl_title = lv_label_create(_bg_obj);
-    lv_obj_set_style_text_font(_lbl_title, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(_lbl_title, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(_lbl_title, lv_color_hex(0xFFFFFF), 0);
     lv_label_set_text(_lbl_title, "ULASIM TAKIP");
-    lv_obj_align(_lbl_title, LV_ALIGN_TOP_LEFT, 20, 15);
+    lv_obj_align(_lbl_title, LV_ALIGN_TOP_LEFT, 68, 16);
 
     // Top Header: Subtitle status
     _lbl_status = lv_label_create(_bg_obj);
     lv_obj_set_style_text_font(_lbl_status, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(_lbl_status, lv_color_hex(0x9E9E9E), 0);
-    lv_label_set_text(_lbl_status, "Yenilemek icin dokunun");
-    lv_obj_align(_lbl_status, LV_ALIGN_TOP_LEFT, 20, 40);
+    lv_label_set_text(_lbl_status, "Tarifeler yukleniyor");
+    lv_obj_align(_lbl_status, LV_ALIGN_TOP_LEFT, 68, 40);
 
     // Top Header: Refresh Button
     _btn_refresh = lv_btn_create(_bg_obj);
     lv_obj_set_size(_btn_refresh, 44, 44);
-    lv_obj_align(_btn_refresh, LV_ALIGN_TOP_RIGHT, -20, 15);
+    lv_obj_align(_btn_refresh, LV_ALIGN_TOP_RIGHT, -15, 15);
     lv_obj_set_style_radius(_btn_refresh, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(_btn_refresh, lv_color_hex(0x222222), 0);
     lv_obj_set_style_border_color(_btn_refresh, lv_color_hex(0x444444), 0);
@@ -204,6 +235,7 @@ bool AppTransit::run() {
     lv_obj_set_style_pad_row(list, 10, 0);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_add_flag(list, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
     // Create 4 Route Cards
     for (int i = 0; i < 4; i++) {
@@ -286,6 +318,7 @@ bool AppTransit::close() {
     _lbl_status = nullptr;
     _btn_refresh = nullptr;
     _lbl_refresh = nullptr;
+    _btn_back = nullptr;
     for (int i = 0; i < 4; i++) {
         _routes[i].card_obj = nullptr;
         _routes[i].lbl_time = nullptr;

@@ -61,8 +61,6 @@ static void display_turn_off_internal(void) {
     // 2. Put panel into ultra-low-power sleep (0x28 + 0x10)
     bsp_display_sleep();
     bsp_display_brightness_set(0);
-    extern esp_err_t bsp_pmu_set_amoled_power(bool enable);
-    bsp_pmu_set_amoled_power(false);
 
     // 3. Drop CPU frequency to 80MHz while screen is off to save power
 #if CONFIG_PM_ENABLE
@@ -90,10 +88,7 @@ void display_manager_turn_on(void) {
             (void)esp_pm_lock_acquire(s_cpu_max_lock);
         }
 #endif
-        // 2. Power on boost rail and wake AMOLED panel from sleep (0x11 + 0x29)
-        extern esp_err_t bsp_pmu_set_amoled_power(bool enable);
-        bsp_pmu_set_amoled_power(true);
-        vTaskDelay(pdMS_TO_TICKS(10));
+        // 2. Wake AMOLED panel from sleep (0x11 + 0x29)
         bsp_display_wake();
         
         // 3. Resume LVGL task
@@ -167,19 +162,21 @@ static void display_manager_task(void *arg) {
             vTaskDelay(pdMS_TO_TICKS(100));
         } else {
             // Screen is OFF: LVGL paused. Check touch hardware interrupt pin (active LOW)
-            // Wait at least 600ms after sleep before waking on touch to prevent debounce bouncing
             TickType_t now_tick = xTaskGetTickCount();
-            if (((now_tick - s_last_sleep_tick) * portTICK_PERIOD_MS > 600) && gpio_get_level(TOUCH_INT_PIN) == 0) {
+            if (((now_tick - s_last_sleep_tick) * portTICK_PERIOD_MS > 350) && gpio_get_level(TOUCH_INT_PIN) == 0) {
                 ESP_LOGI(TAG, "Touch INT detected! Waking up display.");
                 display_manager_turn_on();
             }
-            vTaskDelay(pdMS_TO_TICKS(100));
+            vTaskDelay(pdMS_TO_TICKS(30));
         }
     }
 }
 
 void display_manager_init(void) {
     timeout_ms = 5000;
+
+    // Ensure TOUCH_INT_PIN (GPIO 38) has pull-up enabled so it is stable HIGH and pulled LOW on touch
+    gpio_set_pull_mode(TOUCH_INT_PIN, GPIO_PULLUP_ONLY);
 
     bsp_display_brightness_set(current_brightness);
 

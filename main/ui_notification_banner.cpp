@@ -3,6 +3,7 @@
 #include <string.h>
 #include "app_notifications_custom.hpp"
 #include "bsp/esp-bsp.h"
+#include "display_manager.h"
 
 extern "C" {
 #include "ble_manager.h"
@@ -247,6 +248,9 @@ extern "C" void app_notifications_show_from_ble(const char* payload) {
         // Push notification to history (thread-safe internally)
         AppNotificationsCustom::push_notification(sender, message, notif_id);
         
+        // Wake the display so the user sees the incoming notification
+        display_manager_turn_on();
+
         // Wait up to 1000ms for LVGL lock since we're in the BLE task
         if (bsp_display_lock(1000)) {
             // Show the drop-down banner
@@ -266,6 +270,7 @@ extern "C" void app_notifications_show_from_ble(const char* payload) {
 
 extern "C" void app_notifications_show_system_alert(const char* msg) {
     ESP_LOGI(TAG, "System Alert: %s", msg);
+    display_manager_turn_on();
     if (bsp_display_lock(1000)) {
         AppNotifications::show("SISTEM", msg);
         bsp_display_unlock();

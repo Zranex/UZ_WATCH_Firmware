@@ -1,7 +1,8 @@
-﻿#include "app_call_manager.hpp"
+#include "app_call_manager.hpp"
 #include "ble_manager.h"
 #include "esp_log.h"
 #include "bsp/esp-bsp.h"
+#include "display_manager.h"
 
 #define TAG "CallManager"
 
@@ -12,6 +13,7 @@ void CallManager::init() {
 }
 
 void CallManager::show_incoming_call(const char* caller_name) {
+    display_manager_turn_on();
     if (bsp_display_lock(100)) {
         if (_modal != nullptr) {
             lv_obj_del(_modal);

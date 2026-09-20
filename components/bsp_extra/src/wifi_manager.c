@@ -183,9 +183,7 @@ esp_err_t wifi_manager_start(void)
         sta_netif = esp_netif_create_default_wifi_sta();
     }
 
-    wifi_active = false;
-    current_state = WIFI_STATE_OFF;
-    ESP_LOGW(TAG, "--- MEMORY BEFORE WIFI STOP ---");
+    ESP_LOGW(TAG, "--- MEMORY BEFORE WIFI START ---");
     ESP_LOGW(TAG, "INTERNAL Free: %u, Largest: %u", heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     ESP_LOGW(TAG, "DMA Free: %u", heap_caps_get_free_size(MALLOC_CAP_DMA));
     ESP_LOGW(TAG, "PSRAM Free: %u, Largest: %u", heap_caps_get_free_size(MALLOC_CAP_SPIRAM), heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));

@@ -187,8 +187,12 @@ namespace esp_brookesia::apps {
         lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
     }
 
+    static lv_timer_t * s_wifi_scan_timer = NULL;
+
     static void wifi_scan_check_timer_cb(lv_timer_t * t) {
+        s_wifi_scan_timer = NULL;
         lv_obj_t * list = (lv_obj_t *)t->user_data;
+        if (!list) return;
         char ssids[15][33];
         int num = wifi_manager_get_scanned_networks(ssids, 15);
         
@@ -249,6 +253,7 @@ namespace esp_brookesia::apps {
     static void wifi_scan_btn_event_cb(lv_event_t * e)
     {
         lv_obj_t * list = (lv_obj_t *)lv_event_get_user_data(e);
+        if (!list) return;
         
         uint32_t child_cnt = lv_obj_get_child_cnt(list);
         while(child_cnt > 1) {
@@ -259,8 +264,12 @@ namespace esp_brookesia::apps {
         lv_list_add_text(list, "Taraniyor... Lutfen bekleyin");
         wifi_manager_scan();
         
-        lv_timer_t * timer = lv_timer_create(wifi_scan_check_timer_cb, 3500, list);
-        lv_timer_set_repeat_count(timer, 1);
+        if (s_wifi_scan_timer) {
+            lv_timer_delete(s_wifi_scan_timer);
+            s_wifi_scan_timer = NULL;
+        }
+        s_wifi_scan_timer = lv_timer_create(wifi_scan_check_timer_cb, 3500, list);
+        lv_timer_set_repeat_count(s_wifi_scan_timer, 1);
     }
 
     bool Settings::run()
@@ -451,6 +460,10 @@ namespace esp_brookesia::apps {
         if (wifi_status_timer) {
             lv_timer_delete(wifi_status_timer);
             wifi_status_timer = NULL;
+        }
+        if (s_wifi_scan_timer) {
+            lv_timer_delete(s_wifi_scan_timer);
+            s_wifi_scan_timer = NULL;
         }
         wifi_status_label = NULL;
         return true;

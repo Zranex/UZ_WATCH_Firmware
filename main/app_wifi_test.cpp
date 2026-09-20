@@ -101,6 +101,9 @@ bool AppWiFiTest::close() {
         lv_timer_del(_timer);
         _timer = nullptr;
     }
-    _bg_obj = nullptr;
+    if (_bg_obj != nullptr) {
+        lv_obj_del(_bg_obj);
+        _bg_obj = nullptr;
+    }
     return true;
 }

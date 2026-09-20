@@ -2,6 +2,7 @@
 extern const lv_image_dsc_t icon_flashlight;
 #include "esp_log.h"
 #include "bsp/esp-bsp.h"
+#include "display_manager.h"
 
 #define TAG "Flashlight"
 
@@ -80,7 +81,7 @@ bool AppFlashlight::close() {
     _is_sos = false;
     
     // Restore normal brightness
-    bsp_display_brightness_set(50);
+    bsp_display_brightness_set(display_manager_get_brightness());
     return true;
 }
 
@@ -96,7 +97,7 @@ void AppFlashlight::set_light(bool on) {
         lv_obj_set_style_bg_color(_bg_obj, lv_color_hex(0x000000), 0);
         lv_obj_set_style_bg_opa(_bg_obj, LV_OPA_COVER, 0); // Show background image when off
         lv_obj_set_style_text_color(_lbl_toggle, lv_color_hex(0x555555), 0);
-        bsp_display_brightness_set(50); // Restore to 50 so background is visible
+        bsp_display_brightness_set(display_manager_get_brightness()); // Restore configured brightness
     }
 }
 

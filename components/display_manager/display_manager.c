@@ -27,12 +27,12 @@
 #define TOUCH_INT_PIN GPIO_NUM_38
 #define TOUCH_I2C_ADDR 0x38
 
-static uint8_t current_brightness = 70; // 70% default: saves ~35% AMOLED power while maintaining high contrast
+static uint8_t current_brightness = 50; // 50% default: saves ~50% AMOLED power while maintaining high contrast
 
 static const char *TAG = "DisplayMgr";
 
 static bool display_on = true;
-static uint32_t timeout_ms = 8000;
+static uint32_t timeout_ms = 5000;
 static void (*wake_cb)(void) = NULL;
 static void (*sleep_cb)(void) = NULL;
 static TickType_t s_last_sleep_tick = 0;
@@ -180,7 +180,7 @@ static void display_manager_task(void *arg) {
 }
 
 void display_manager_init(void) {
-    timeout_ms = 8000; // 8 seconds default timeout
+    timeout_ms = 5000; // 5 seconds default timeout (smartwatch power standard)
 
     // Ensure TOUCH_INT_PIN (GPIO 38) has pull-up enabled so it is stable HIGH and pulled LOW on touch
     gpio_set_pull_mode(TOUCH_INT_PIN, GPIO_PULLUP_ONLY);

@@ -216,7 +216,12 @@ extern "C" void app_main(void)
     display_manager_set_sleep_cb([]() {
         pedometer_set_low_power(true);
         if (wifi_manager_is_active()) {
-            esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
+            if (wifi_manager_is_ap_active()) {
+                ESP_LOGI("Power", "Screen sleeping: SoftAP active, stopping Wi-Fi to preserve battery");
+                wifi_manager_stop();
+            } else {
+                esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
+            }
         }
         if (bsp_display_lock(1000)) {
             AppMediaPlayer::force_close();

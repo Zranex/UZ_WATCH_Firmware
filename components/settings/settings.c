@@ -15,7 +15,7 @@
 #include "cJSON.h"
 
 static const char *TAG = "SETTINGS";
-static uint8_t brightness = 30;
+static uint8_t brightness = 50;
 static uint32_t display_timeout_ms = 30000;
 static bool sound_enabled = true;
 static uint8_t notify_volume = 100; // percent 0..100 (louder default)

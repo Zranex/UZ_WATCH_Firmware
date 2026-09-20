@@ -60,6 +60,12 @@ typedef enum {
 // Get the current Wi-Fi state
 wifi_state_t wifi_manager_get_state(void);
 
+// Start Hotspot / SoftAP mode for direct offline connection without any router
+esp_err_t wifi_manager_start_ap(const char* ssid, const char* password);
+
+// Check if SoftAP mode is currently active
+bool wifi_manager_is_ap_active(void);
+
 #ifdef __cplusplus
 }
 #endif

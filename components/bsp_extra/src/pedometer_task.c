@@ -13,12 +13,14 @@ static qmi8658_acc_t s_latest_acc = {0};
 static volatile bool s_acc_valid = false;
 
 // Algorithm parameters
-static volatile uint32_t s_pedometer_delay_ms = 50; // 20 Hz active, 10 Hz sleep
+static volatile uint32_t s_pedometer_delay_ms = 50; // 20 Hz active, 10 Hz sleep, 4 Hz still
+static volatile bool s_is_low_power = false;
 #define PEAK_THRESHOLD 1.2f             // 1.2 G to trigger a step (Earth gravity is 1.0 G)
 #define COOLDOWN_MS 300                 // Minimum time between steps
 
 void pedometer_set_low_power(bool enable)
 {
+    s_is_low_power = enable;
     s_pedometer_delay_ms = enable ? 100 : 50;
 }
 
@@ -27,10 +29,12 @@ static void pedometer_task(void *pvParameter)
     qmi8658_acc_t acc;
     float filtered_mag = 1.0f;          // Initialize with 1G
     float alpha = 0.2f;                 // Low pass filter coefficient
+    float prev_mag = 1.0f;
+    int still_ticks = 0;
     
     TickType_t last_step_time = 0;
 
-    ESP_LOGI(TAG, "Pedometer task started");
+    ESP_LOGI(TAG, "Pedometer task started (Motion-Adaptive)");
 
     while (1) {
         if (qmi8658_read_acc(&acc) == ESP_OK) {
@@ -39,6 +43,27 @@ static void pedometer_task(void *pvParameter)
             // Calculate vector magnitude
             float mag = sqrtf((acc.x * acc.x) + (acc.y * acc.y) + (acc.z * acc.z));
             
+            // Motion-adaptive delay when screen is off (low power mode)
+            if (s_is_low_power) {
+                float delta_mag = fabsf(mag - prev_mag);
+                if (delta_mag < 0.05f) {
+                    if (still_ticks < 50) still_ticks++;
+                } else {
+                    still_ticks = 0;
+                }
+                prev_mag = mag;
+
+                // If stationary for > 1 sec (~10 ticks at 100ms), relax polling to 250ms
+                if (still_ticks >= 10) {
+                    s_pedometer_delay_ms = 250;
+                } else {
+                    s_pedometer_delay_ms = 100;
+                }
+            } else {
+                still_ticks = 0;
+                s_pedometer_delay_ms = 50;
+            }
+
             // Low pass filter to smooth out noise
             filtered_mag = (alpha * mag) + ((1.0f - alpha) * filtered_mag);
             

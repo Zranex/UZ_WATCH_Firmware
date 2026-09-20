@@ -52,29 +52,36 @@ void AppLockscreen::timer_cb(lv_timer_t * t) {
 void AppLockscreen::event_cb(lv_event_t * e) {
     lv_event_code_t code = lv_event_get_code(e);
     
-    if(code == LV_EVENT_GESTURE) {
+    bool do_unlock = false;
+    if (code == LV_EVENT_GESTURE) {
         lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
-        if(dir == LV_DIR_TOP) {
-            ESP_UTILS_LOGI("Unlock gesture detected (Swipe Up). Loading main screen...");
-            
-            if (timer_clock) {
-                lv_timer_delete(timer_clock);
-                timer_clock = nullptr;
-            }
-            
-            if (_phone) {
-                lv_screen_load(_phone->getDisplay().getMainScreen());
-                ESP_UTILS_LOGI("Switched to main screen.");
-            }
-            
-            if (lock_scr) {
-                lv_obj_delete(lock_scr);
-                lock_scr = nullptr;
-                label_hour = nullptr;
-                label_minute = nullptr;
-                label_second = nullptr;
-                label_date = nullptr;
-            }
+        if (dir == LV_DIR_TOP || dir == LV_DIR_BOTTOM || dir == LV_DIR_LEFT || dir == LV_DIR_RIGHT) {
+            do_unlock = true;
+        }
+    } else if (code == LV_EVENT_CLICKED || code == LV_EVENT_SHORT_CLICKED) {
+        do_unlock = true;
+    }
+
+    if (do_unlock) {
+        ESP_UTILS_LOGI("Unlock event detected. Loading main screen...");
+        
+        if (timer_clock) {
+            lv_timer_delete(timer_clock);
+            timer_clock = nullptr;
+        }
+        
+        if (_phone) {
+            lv_screen_load(_phone->getDisplay().getMainScreen());
+            ESP_UTILS_LOGI("Switched to main screen.");
+        }
+        
+        if (lock_scr) {
+            lv_obj_delete(lock_scr);
+            lock_scr = nullptr;
+            label_hour = nullptr;
+            label_minute = nullptr;
+            label_second = nullptr;
+            label_date = nullptr;
         }
     }
 }
@@ -97,6 +104,8 @@ void AppLockscreen::show(esp_brookesia::systems::phone::Phone* phone) {
     lv_obj_t* img = lv_image_create(lock_scr);
     lv_image_set_src(img, &lockscreen_bg);
     lv_obj_center(img);
+    lv_obj_add_flag(img, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(img, event_cb, LV_EVENT_ALL, nullptr);
     
     label_hour = lv_label_create(lock_scr);
     lv_obj_set_style_text_font(label_hour, &font_cinzel_bold_160, 0);
@@ -131,6 +140,7 @@ void AppLockscreen::show(esp_brookesia::systems::phone::Phone* phone) {
 
     lv_obj_add_flag(lock_scr, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(lock_scr, event_cb, LV_EVENT_GESTURE, nullptr);
+    lv_obj_add_event_cb(lock_scr, event_cb, LV_EVENT_CLICKED, nullptr);
     
     lv_screen_load(lock_scr);
     ESP_UTILS_LOGI("Lockscreen loaded with custom clock design.");

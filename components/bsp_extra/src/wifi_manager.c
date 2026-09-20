@@ -18,6 +18,8 @@ static bool wifi_active = false;
 static bool nvs_initialized = false;
 static bool netif_initialized = false;
 static esp_netif_t *sta_netif = NULL;
+static esp_netif_t *ap_netif = NULL;
+static bool ap_active = false;
 static esp_event_handler_instance_t instance_any_id = NULL;
 static esp_event_handler_instance_t instance_got_ip = NULL;
 static int s_retry_count = 0;
@@ -274,6 +276,7 @@ esp_err_t wifi_manager_stop(void)
     esp_wifi_deinit();
 
     wifi_active = false;
+    ap_active = false;
     current_state = WIFI_STATE_OFF;
     ap_count = 0;
     ESP_LOGI(TAG, "WiFi hardware stopped and memory freed");
@@ -383,6 +386,13 @@ void wifi_manager_get_ip(char* buf)
 {
     if (buf == NULL) return;
     buf[0] = '\0';
+    if (ap_active && ap_netif != NULL) {
+        esp_netif_ip_info_t ip_info;
+        if (esp_netif_get_ip_info(ap_netif, &ip_info) == ESP_OK) {
+            sprintf(buf, IPSTR, IP2STR(&ip_info.ip));
+            return;
+        }
+    }
     if (current_state == WIFI_STATE_GOT_IP && sta_netif != NULL) {
         esp_netif_ip_info_t ip_info;
         if (esp_netif_get_ip_info(sta_netif, &ip_info) == ESP_OK) {
@@ -412,6 +422,11 @@ void wifi_manager_get_ssid(char* buf)
     if (buf == NULL) return;
     buf[0] = '\0';
     if (!wifi_active) return;
+    if (ap_active) {
+        strncpy(buf, "UZ_WATCH_AirDrop", 32);
+        buf[32] = '\0';
+        return;
+    }
     wifi_config_t conf = {0};
     if (esp_wifi_get_config(WIFI_IF_STA, &conf) == ESP_OK && strlen((char*)conf.sta.ssid) > 0) {
         strncpy(buf, (char*)conf.sta.ssid, 32);
@@ -420,4 +435,86 @@ void wifi_manager_get_ssid(char* buf)
         strncpy(buf, DEFAULT_WIFI_SSID, 32);
         buf[32] = '\0';
     }
+}
+
+esp_err_t wifi_manager_start_ap(const char* ssid, const char* password)
+{
+    ESP_LOGI(TAG, "Starting Wi-Fi Hotspot (SoftAP) mode...");
+    if (wifi_active) {
+        wifi_manager_stop();
+    }
+    if (!nvs_initialized) {
+        wifi_manager_pre_init();
+    }
+    if (!netif_initialized) {
+        ESP_ERROR_CHECK(esp_netif_init());
+        esp_err_t loop_ret = esp_event_loop_create_default();
+        if (loop_ret != ESP_OK && loop_ret != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "Failed to create default event loop");
+            return loop_ret;
+        }
+        netif_initialized = true;
+    }
+    if (ap_netif == NULL) {
+        ap_netif = esp_netif_create_default_wifi_ap();
+    }
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    cfg.static_rx_buf_num = 4;
+    cfg.dynamic_rx_buf_num = 8;
+    cfg.tx_buf_type = 1;
+    cfg.static_tx_buf_num = 0;
+    cfg.dynamic_tx_buf_num = 8;
+    cfg.cache_tx_buf_num = 4;
+    cfg.mgmt_sbuf_num = 6;
+    cfg.ampdu_rx_enable = 0;
+    cfg.ampdu_tx_enable = 0;
+    cfg.rx_ba_win = 4;
+    
+    esp_err_t err = esp_wifi_init(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "WiFi init failed: %s", esp_err_to_name(err));
+        current_state = WIFI_STATE_FAILED;
+        return err;
+    }
+    err = esp_event_handler_instance_register(WIFI_EVENT,
+                                              ESP_EVENT_ANY_ID,
+                                              &wifi_event_handler,
+                                              NULL,
+                                              &instance_any_id);
+    if (err != ESP_OK) return err;
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    
+    wifi_config_t ap_config = {0};
+    const char *ap_ssid = (ssid && strlen(ssid) > 0) ? ssid : "UZ_WATCH_AirDrop";
+    strncpy((char *)ap_config.ap.ssid, ap_ssid, sizeof(ap_config.ap.ssid));
+    ap_config.ap.ssid_len = strlen(ap_ssid);
+    ap_config.ap.channel = 1;
+    ap_config.ap.max_connection = 4;
+    
+    if (password && strlen(password) >= 8) {
+        strncpy((char *)ap_config.ap.password, password, sizeof(ap_config.ap.password));
+        ap_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    } else {
+        ap_config.ap.authmode = WIFI_AUTH_OPEN;
+    }
+    
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+    
+    // Cap max TX power to 13 dBm for AMOLED protection
+    esp_wifi_set_max_tx_power(52);
+    
+    wifi_active = true;
+    ap_active = true;
+    current_state = WIFI_STATE_GOT_IP;
+    
+    ESP_LOGI(TAG, "SoftAP started! SSID: %s, Auth: %s", ap_ssid, 
+             (ap_config.ap.authmode == WIFI_AUTH_OPEN) ? "OPEN" : "WPA2");
+    return ESP_OK;
+}
+
+bool wifi_manager_is_ap_active(void)
+{
+    return ap_active;
 }

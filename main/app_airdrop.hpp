@@ -12,11 +12,13 @@ public:
     bool close() override;
     void request_close() { notifyCoreClosed(); }
 
-private:
+public:
     lv_obj_t* _bg_obj;
     lv_obj_t* _btn_back;
     lv_obj_t* _label_status;
     lv_obj_t* _label_desc;
+    lv_obj_t* _btn_toggle_mode;
+    lv_obj_t* _label_btn_mode;
     lv_timer_t* _poll_timer;
 };
 

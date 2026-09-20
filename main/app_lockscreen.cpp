@@ -21,7 +21,7 @@ lv_timer_t* AppLockscreen::timer_clock = nullptr;
 
 void AppLockscreen::anim_deleted_cb(lv_anim_t * a) {
     if (lock_scr) {
-        lv_obj_delete(lock_scr);
+        lv_obj_delete_async(lock_scr);
         lock_scr = nullptr;
         ESP_UTILS_LOGI("Lockscreen object deleted.");
     }
@@ -50,6 +50,9 @@ void AppLockscreen::timer_cb(lv_timer_t * t) {
 }
 
 void AppLockscreen::event_cb(lv_event_t * e) {
+    // If already unlocked or unlocking, ignore any trailing events
+    if (!lock_scr) return;
+
     lv_event_code_t code = lv_event_get_code(e);
     
     bool do_unlock = false;
@@ -58,7 +61,7 @@ void AppLockscreen::event_cb(lv_event_t * e) {
         if (dir == LV_DIR_TOP || dir == LV_DIR_BOTTOM || dir == LV_DIR_LEFT || dir == LV_DIR_RIGHT) {
             do_unlock = true;
         }
-    } else if (code == LV_EVENT_CLICKED || code == LV_EVENT_SHORT_CLICKED) {
+    } else if (code == LV_EVENT_SHORT_CLICKED || code == LV_EVENT_CLICKED) {
         do_unlock = true;
     }
 
@@ -76,12 +79,14 @@ void AppLockscreen::event_cb(lv_event_t * e) {
         }
         
         if (lock_scr) {
-            lv_obj_delete(lock_scr);
+            lv_obj_t* scr_to_del = lock_scr;
             lock_scr = nullptr;
             label_hour = nullptr;
             label_minute = nullptr;
             label_second = nullptr;
             label_date = nullptr;
+            // CRITICAL: Delete asynchronously so the current LVGL event traversal finishes cleanly without assertion/panic
+            lv_obj_delete_async(scr_to_del);
         }
     }
 }
@@ -104,8 +109,8 @@ void AppLockscreen::show(esp_brookesia::systems::phone::Phone* phone) {
     lv_obj_t* img = lv_image_create(lock_scr);
     lv_image_set_src(img, &lockscreen_bg);
     lv_obj_center(img);
-    lv_obj_add_flag(img, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(img, event_cb, LV_EVENT_ALL, nullptr);
+    // Background image must NOT intercept touches; touches go directly to lock_scr
+    lv_obj_remove_flag(img, LV_OBJ_FLAG_CLICKABLE);
     
     label_hour = lv_label_create(lock_scr);
     lv_obj_set_style_text_font(label_hour, &font_cinzel_bold_160, 0);
@@ -140,6 +145,7 @@ void AppLockscreen::show(esp_brookesia::systems::phone::Phone* phone) {
 
     lv_obj_add_flag(lock_scr, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(lock_scr, event_cb, LV_EVENT_GESTURE, nullptr);
+    lv_obj_add_event_cb(lock_scr, event_cb, LV_EVENT_SHORT_CLICKED, nullptr);
     lv_obj_add_event_cb(lock_scr, event_cb, LV_EVENT_CLICKED, nullptr);
     
     lv_screen_load(lock_scr);

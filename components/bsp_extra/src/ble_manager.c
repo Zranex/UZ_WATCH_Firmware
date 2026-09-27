@@ -166,11 +166,19 @@ static int ble_notif_chr_access(uint16_t conn_handle, uint16_t attr_handle,
             buf[len] = '\0';
             ESP_LOGI(TAG, "Received Notification/Command: %s", buf);
             
-            if (strncmp(buf, "CALL|", 5) == 0) {
+            if (strcmp(buf, "FIND_PHONE_STOP_ACK") == 0) {
+                extern void app_find_phone_handle_stop_ack(void);
+                app_find_phone_handle_stop_ack();
+            } else if (strcmp(buf, "FIND_WATCH") == 0) {
+                extern void display_manager_turn_on(void);
+                display_manager_turn_on();
+                extern void app_notifications_show_system_alert(const char* msg);
+                app_notifications_show_system_alert("Telefon Saati Ariyor!");
+            } else if (strncmp(buf, "CALL|", 5) == 0) {
                 app_call_manager_show_incoming_call(buf + 5);
             } else if (strcmp(buf, "CALL_END") == 0) {
                 app_call_manager_hide_incoming_call();
-                        } else if (strncmp(buf, "AGENDA|", 7) == 0) {
+            } else if (strncmp(buf, "AGENDA|", 7) == 0) {
                 app_agenda_update_from_ble(buf + 7);
             } else if (strncmp(buf, "TRANSIT_RESP|", 13) == 0) {
                 app_transit_update_from_ble(buf + 13);
@@ -213,18 +221,19 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
         if (event->connect.status == 0) {
             ble_conn_handle = event->connect.conn_handle;
 
-            // Request low-power connection interval (500ms - 1000ms with latency 4)
-            // Cuts RF wakeups by ~90% while keeping notifications and media controls responsive!
+            // Standard smartwatch BLE connection parameters:
+            // interval: 50ms - 100ms, latency: 1 (effective max 200ms), timeout: 5000ms
+            // Fully compliant with Android Bluetooth CDD and iOS Accessory Guidelines!
             struct ble_gap_upd_params conn_params = {
-                .itvl_min = 400, // 400 * 1.25ms = 500ms
-                .itvl_max = 800, // 800 * 1.25ms = 1000ms
-                .latency = 4,    // Slave can skip up to 4 connection events if no data
-                .supervision_timeout = 600, // 600 * 10ms = 6000ms (6s)
+                .itvl_min = 40,  // 40 * 1.25ms = 50ms
+                .itvl_max = 80,  // 80 * 1.25ms = 100ms
+                .latency = 1,    // Slave can skip 1 connection event when idle
+                .supervision_timeout = 500, // 500 * 10ms = 5000ms (5s)
                 .min_ce_len = 0,
                 .max_ce_len = 0,
             };
             int rc = ble_gap_update_params(event->connect.conn_handle, &conn_params);
-            ESP_LOGI(TAG, "Requested low-power BLE connection parameters: rc=%d", rc);
+            ESP_LOGI(TAG, "Requested rock-solid BLE connection parameters: rc=%d", rc);
         } else {
             // Connection failed, resume advertising
             ble_hs_id_infer_auto(0, NULL); // We don't care about addr type here directly
@@ -299,6 +308,11 @@ static void ble_app_advertise(void)
 bool ble_manager_is_active(void)
 {
     return s_ble_active;
+}
+
+bool ble_manager_is_connected(void)
+{
+    return (s_ble_active && ble_conn_handle != BLE_HS_CONN_HANDLE_NONE);
 }
 
 static void ble_app_on_sync(void);
@@ -398,18 +412,20 @@ esp_err_t ble_manager_init(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    // Read stored BLE enable state from NVS (default: 0 = OFF)
+    // Read stored BLE enable state from NVS (default: 1 = ON)
     nvs_handle_t nvs_h;
-    uint8_t ble_en = 0;
+    uint8_t ble_en = 1;
     if (nvs_open("settings", NVS_READWRITE, &nvs_h) == ESP_OK) {
         if (nvs_get_u8(nvs_h, "ble_en", &ble_en) == ESP_OK) {
             s_ble_active = (ble_en == 1);
         } else {
-            s_ble_active = false;
+            s_ble_active = true;
+            nvs_set_u8(nvs_h, "ble_en", 1);
+            nvs_commit(nvs_h);
         }
         nvs_close(nvs_h);
     } else {
-        s_ble_active = false;
+        s_ble_active = true;
     }
     ESP_LOGI(TAG, "BLE power state loaded: %s", s_ble_active ? "ENABLED" : "DISABLED (Power Saving)");
 

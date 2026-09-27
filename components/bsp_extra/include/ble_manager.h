@@ -28,6 +28,16 @@ bool ble_manager_is_active(void);
  */
 void ble_manager_set_active(bool enable);
 
+/**
+ * @brief Check if a BLE peer (phone) is currently connected
+ */
+bool ble_manager_is_connected(void);
+
+/**
+ * @brief Reset Find Phone UI state when phone acknowledges stop
+ */
+void app_find_phone_handle_stop_ack(void);
+
 #ifdef __cplusplus
 }
 #endif

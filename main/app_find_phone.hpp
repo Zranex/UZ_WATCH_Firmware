@@ -9,6 +9,7 @@ public:
     ~AppFindPhone();
 
     void reset_state();
+    void reset_state_offline();
     void request_close() { notifyCoreClosed(); }
     static AppFindPhone* get_instance();
 
@@ -26,6 +27,7 @@ private:
     lv_timer_t* _poll_timer;
 
     bool _is_alarming;
+    int _current_state;
 
     static void on_back_clicked(lv_event_t *e);
     static void btn_alarm_cb(lv_event_t *e);

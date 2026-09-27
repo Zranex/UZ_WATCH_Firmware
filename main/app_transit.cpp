@@ -137,8 +137,13 @@ void AppTransit::refresh_ui_if_visible() {
 static void on_back_clicked(lv_event_t* e) {
     AppTransit* app = (AppTransit*)lv_event_get_user_data(e);
     if (app) {
-        ESP_LOGI(TAG, "Back button clicked -> closing transit app");
-        app->request_close();
+        ESP_LOGI(TAG, "Back button clicked -> scheduling transit app close");
+        lv_async_call([](void* data) {
+            AppTransit* t = (AppTransit*)data;
+            if (t) {
+                t->request_close();
+            }
+        }, app);
     }
 }
 
@@ -321,7 +326,7 @@ void AppTransit::force_close() {
 bool AppTransit::close() {
     ESP_LOGI(TAG, "AppTransit::close()");
     if (_bg_obj != nullptr) {
-        lv_obj_del(_bg_obj);
+        lv_obj_delete_async(_bg_obj);
         _bg_obj = nullptr;
     }
     _lbl_title = nullptr;

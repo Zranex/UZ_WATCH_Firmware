@@ -2,6 +2,7 @@
 extern const lv_image_dsc_t icon_find_phone;
 #include "esp_log.h"
 #include "bsp/esp-bsp.h"
+#include "display_manager.h"
 
 extern "C" {
 #include "ble_manager.h"
@@ -13,9 +14,11 @@ static AppFindPhone* s_find_phone_instance = nullptr;
 
 extern "C" void app_find_phone_handle_stop_ack(void) {
     if (s_find_phone_instance) {
-        if (bsp_display_lock(1000)) {
+        if (display_manager_is_on() && bsp_display_lock(1000)) {
             s_find_phone_instance->reset_state();
             bsp_display_unlock();
+        } else {
+            s_find_phone_instance->reset_state_offline();
         }
     }
 }
@@ -27,7 +30,7 @@ AppFindPhone* AppFindPhone::get_instance() {
 AppFindPhone::AppFindPhone() 
     : esp_brookesia::systems::phone::App("Tel Bul", &icon_find_phone, true),
       _bg_obj(nullptr), _btn_back(nullptr), _btn_alarm(nullptr), _lbl_alarm(nullptr), 
-      _status_label(nullptr), _poll_timer(nullptr), _is_alarming(false) {
+      _status_label(nullptr), _poll_timer(nullptr), _is_alarming(false), _current_state(-1) {
     s_find_phone_instance = this;
 }
 
@@ -40,7 +43,12 @@ AppFindPhone::~AppFindPhone() {
 void AppFindPhone::on_back_clicked(lv_event_t *e) {
     AppFindPhone *self = (AppFindPhone *)lv_event_get_user_data(e);
     if (self) {
-        self->request_close();
+        lv_async_call([](void *data) {
+            AppFindPhone *app = (AppFindPhone *)data;
+            if (app) {
+                app->request_close();
+            }
+        }, self);
     }
 }
 
@@ -54,6 +62,7 @@ bool AppFindPhone::run() {
     lv_obj_set_style_bg_color(_bg_obj, lv_color_hex(0x121212), 0);
     lv_obj_set_style_border_width(_bg_obj, 0, 0);
     lv_obj_set_style_radius(_bg_obj, 0, 0);
+    lv_obj_set_style_shadow_width(_bg_obj, 0, LV_STATE_ANY);
     lv_obj_clear_flag(_bg_obj, LV_OBJ_FLAG_SCROLLABLE);
 
     // 1. Back Button (<) at Top-Left
@@ -64,6 +73,8 @@ bool AppFindPhone::run() {
     lv_obj_set_style_bg_color(_btn_back, lv_color_hex(0x222222), 0);
     lv_obj_set_style_border_color(_btn_back, lv_color_hex(0x444444), 0);
     lv_obj_set_style_border_width(_btn_back, 1, 0);
+    lv_obj_set_style_shadow_width(_btn_back, 0, LV_STATE_ANY);
+    lv_obj_set_style_shadow_spread(_btn_back, 0, LV_STATE_ANY);
     lv_obj_add_event_cb(_btn_back, on_back_clicked, LV_EVENT_CLICKED, this);
 
     lv_obj_t* lbl_back = lv_label_create(_btn_back);
@@ -84,11 +95,13 @@ bool AppFindPhone::run() {
     lv_obj_set_style_text_font(_status_label, &lv_font_montserrat_14, 0);
     lv_obj_align(_status_label, LV_ALIGN_CENTER, 0, -110);
 
-    // 4. Big Circular Alarm Button
+    // 4. Big Circular Alarm Button (Zero shadow to avoid software box blur WDT)
     _btn_alarm = lv_btn_create(_bg_obj);
     lv_obj_set_size(_btn_alarm, 170, 170);
     lv_obj_align(_btn_alarm, LV_ALIGN_CENTER, 0, 20);
     lv_obj_set_style_radius(_btn_alarm, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_shadow_width(_btn_alarm, 0, LV_STATE_ANY);
+    lv_obj_set_style_shadow_spread(_btn_alarm, 0, LV_STATE_ANY);
     lv_obj_add_event_cb(_btn_alarm, btn_alarm_cb, LV_EVENT_CLICKED, this);
     
     _lbl_alarm = lv_label_create(_btn_alarm);
@@ -104,6 +117,7 @@ bool AppFindPhone::run() {
         }
     }, 1000, this);
 
+    _current_state = -1; // Force initial draw
     update_ui();
     return true;
 }
@@ -124,13 +138,14 @@ bool AppFindPhone::close() {
     }
 
     if (_bg_obj != nullptr) {
-        lv_obj_del(_bg_obj);
+        lv_obj_delete_async(_bg_obj);
         _bg_obj = nullptr;
     }
     _btn_back = nullptr;
     _btn_alarm = nullptr;
     _lbl_alarm = nullptr;
     _status_label = nullptr;
+    _current_state = -1;
     return true;
 }
 
@@ -139,22 +154,38 @@ void AppFindPhone::reset_state() {
     update_ui();
 }
 
+void AppFindPhone::reset_state_offline() {
+    _is_alarming = false;
+    _current_state = -1;
+}
+
 void AppFindPhone::update_ui() {
     if (!_status_label || !_btn_alarm || !_lbl_alarm) return;
 
     bool connected = ble_manager_is_connected();
+    int target_state = 0; // 0: Disconnected, 1: Ready, 2: Ringing
 
     if (!connected) {
+        target_state = 0;
+        _is_alarming = false;
+    } else if (_is_alarming) {
+        target_state = 2;
+    } else {
+        target_state = 1;
+    }
+
+    if (target_state == _current_state) {
+        return; // State unchanged, do not dirty objects or cause redraw
+    }
+    _current_state = target_state;
+
+    if (target_state == 0) {
         lv_label_set_text(_status_label, "Bluetooth Bagli Degil!");
         lv_obj_set_style_text_color(_status_label, lv_color_hex(0xFFA500), 0);
         
         lv_obj_set_style_bg_color(_btn_alarm, lv_color_hex(0x333333), 0);
         lv_label_set_text(_lbl_alarm, LV_SYMBOL_WARNING "\nBAGLANTI\nYOK");
-        _is_alarming = false;
-        return;
-    }
-
-    if (_is_alarming) {
+    } else if (target_state == 2) {
         lv_label_set_text(_status_label, "Telefon Caliniyor...");
         lv_obj_set_style_text_color(_status_label, lv_color_hex(0xFF5252), 0);
         

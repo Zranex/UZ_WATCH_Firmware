@@ -31,11 +31,8 @@ void AppNotifications::init() {
     lv_obj_set_flex_flow(container, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(container, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     
-    // Add shadow
-    lv_obj_set_style_shadow_width(container, 20, 0);
-    lv_obj_set_style_shadow_color(container, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_shadow_opa(container, LV_OPA_50, 0);
-    lv_obj_set_style_shadow_ofs_y(container, 10, 0);
+    // Shadow disabled for performance and zero SW blur overhead
+    lv_obj_set_style_shadow_width(container, 0, 0);
 
     // Title label (Sender)
     title_label = lv_label_create(container);

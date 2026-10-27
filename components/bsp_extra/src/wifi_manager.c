@@ -1,5 +1,6 @@
 #include "wifi_manager.h"
 #include "esp_wifi.h"
+#include "esp_wifi_default.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
@@ -253,6 +254,7 @@ esp_err_t wifi_manager_stop(void)
         ESP_LOGW(TAG, "WiFi not active");
         return ESP_OK;
     }
+    wifi_active = false;
 
     if (esp_sntp_enabled()) {
         esp_sntp_stop();
@@ -271,9 +273,17 @@ esp_err_t wifi_manager_stop(void)
         instance_got_ip = NULL;
     }
 
+    if (sta_netif != NULL) {
+        esp_netif_destroy_default_wifi(sta_netif);
+        sta_netif = NULL;
+    }
+    if (ap_netif != NULL) {
+        esp_netif_destroy_default_wifi(ap_netif);
+        ap_netif = NULL;
+    }
+
     esp_wifi_deinit();
 
-    wifi_active = false;
     ap_active = false;
     current_state = WIFI_STATE_OFF;
     ap_count = 0;
@@ -401,6 +411,9 @@ void wifi_manager_get_ip(char* buf)
 
 esp_err_t wifi_manager_connect_default(void)
 {
+    if (ap_active) {
+        wifi_manager_stop();
+    }
     if (!wifi_active) {
         return wifi_manager_start();
     }

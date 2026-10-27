@@ -79,7 +79,7 @@ bool AppActivity::close() {
         _timer = nullptr;
     }
     if (_bg_obj) {
-        lv_obj_delete(_bg_obj);
+        lv_obj_delete_async(_bg_obj);
         _bg_obj = nullptr;
     }
     _arc_steps = nullptr;

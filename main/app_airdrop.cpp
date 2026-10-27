@@ -1,11 +1,9 @@
 #include "lvgl.h"
 extern "C" const lv_image_dsc_t icon_airdrop;
 
-
 #include "app_airdrop.hpp"
 #include "airdrop_manager.hpp"
 #include "esp_log.h"
-
 #include "wifi_manager.h"
 
 static const char *TAG = "AppAirDrop";
@@ -13,7 +11,12 @@ static const char *TAG = "AppAirDrop";
 static void on_airdrop_back_clicked(lv_event_t* e) {
     AppAirDrop* app = (AppAirDrop*)lv_event_get_user_data(e);
     if (app) {
-        app->request_close();
+        lv_async_call([](void* data) {
+            AppAirDrop* a = (AppAirDrop*)data;
+            if (a) {
+                a->request_close();
+            }
+        }, app);
     }
 }
 
@@ -24,11 +27,15 @@ static void on_airdrop_mode_toggle_clicked(lv_event_t* e) {
     if (wifi_manager_is_ap_active()) {
         ESP_LOGI(TAG, "Switching to Default Wi-Fi (STA)...");
         wifi_manager_connect_default();
+        AirDropManager::stop_server();
+        AirDropManager::start_server();
         if (app->_label_btn_mode) lv_label_set_text(app->_label_btn_mode, LV_SYMBOL_WIFI " Hotspot Ac (Internetsiz)");
         if (app->_label_desc) lv_label_set_text(app->_label_desc, "Wi-Fi Baglaniyor...\nLutfen bekleyin.");
     } else {
         ESP_LOGI(TAG, "Switching to Hotspot (SoftAP)...");
         wifi_manager_start_ap("UZ_WATCH_AirDrop", NULL);
+        AirDropManager::stop_server();
+        AirDropManager::start_server();
         if (app->_label_btn_mode) lv_label_set_text(app->_label_btn_mode, LV_SYMBOL_HOME " Ev Wi-Fi'a Gec");
         if (app->_label_desc) {
             lv_label_set_text(app->_label_desc, "Hotspot Aktif (Internetsiz)!\n\n1. Telefonda baglanin:\nSSID: UZ_WATCH_AirDrop\n\n2. Tarayicida acin:\nhttp://192.168.4.1");
@@ -46,6 +53,8 @@ AppAirDrop::~AppAirDrop() {
 }
 
 bool AppAirDrop::run() {
+    if (_bg_obj != nullptr) return true;
+
     lv_obj_t* scr = lv_scr_act();
     _bg_obj = lv_obj_create(scr);
     lv_obj_set_size(_bg_obj, LV_PCT(100), LV_PCT(100));
@@ -53,15 +62,26 @@ bool AppAirDrop::run() {
     lv_obj_set_style_bg_opa(_bg_obj, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(_bg_obj, 0, 0);
     lv_obj_set_style_radius(_bg_obj, 0, 0);
+    lv_obj_set_style_shadow_width(_bg_obj, 0, 0);
+    lv_obj_set_style_shadow_spread(_bg_obj, 0, 0);
+    lv_obj_set_style_shadow_opa(_bg_obj, LV_OPA_TRANSP, 0);
+    lv_obj_clear_flag(_bg_obj, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Top Header: Back Button (<)
-    _btn_back = lv_btn_create(_bg_obj);
+    // Top Header: Back Button (<) (lv_obj_create to avoid lv_btn theme shadows)
+    _btn_back = lv_obj_create(_bg_obj);
+    lv_obj_add_flag(_btn_back, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(_btn_back, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(_btn_back, 0, 0);
     lv_obj_set_size(_btn_back, 44, 44);
     lv_obj_align(_btn_back, LV_ALIGN_TOP_LEFT, 15, 15);
-    lv_obj_set_style_radius(_btn_back, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_radius(_btn_back, 22, 0);
     lv_obj_set_style_bg_color(_btn_back, lv_color_hex(0x222222), 0);
+    lv_obj_set_style_bg_opa(_btn_back, LV_OPA_COVER, 0);
     lv_obj_set_style_border_color(_btn_back, lv_color_hex(0x444444), 0);
     lv_obj_set_style_border_width(_btn_back, 1, 0);
+    lv_obj_set_style_shadow_width(_btn_back, 0, 0);
+    lv_obj_set_style_shadow_spread(_btn_back, 0, 0);
+    lv_obj_set_style_shadow_opa(_btn_back, LV_OPA_TRANSP, 0);
     lv_obj_add_event_cb(_btn_back, on_airdrop_back_clicked, LV_EVENT_CLICKED, this);
 
     lv_obj_t* lbl_back = lv_label_create(_btn_back);
@@ -85,14 +105,21 @@ bool AppAirDrop::run() {
     lv_obj_set_style_text_align(_label_desc, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(_label_desc, LV_ALIGN_CENTER, 0, -20);
 
-    // Mode Toggle Button (Hotspot / Home Wi-Fi)
-    _btn_toggle_mode = lv_btn_create(_bg_obj);
+    // Mode Toggle Button (Hotspot / Home Wi-Fi) (lv_obj_create to avoid lv_btn theme shadows)
+    _btn_toggle_mode = lv_obj_create(_bg_obj);
+    lv_obj_add_flag(_btn_toggle_mode, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(_btn_toggle_mode, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(_btn_toggle_mode, 0, 0);
     lv_obj_set_size(_btn_toggle_mode, 270, 46);
     lv_obj_align(_btn_toggle_mode, LV_ALIGN_BOTTOM_MID, 0, -25);
     lv_obj_set_style_radius(_btn_toggle_mode, 12, 0);
     lv_obj_set_style_bg_color(_btn_toggle_mode, lv_color_hex(0x222222), 0);
+    lv_obj_set_style_bg_opa(_btn_toggle_mode, LV_OPA_COVER, 0);
     lv_obj_set_style_border_color(_btn_toggle_mode, lv_color_hex(0x00E676), 0);
     lv_obj_set_style_border_width(_btn_toggle_mode, 1, 0);
+    lv_obj_set_style_shadow_width(_btn_toggle_mode, 0, 0);
+    lv_obj_set_style_shadow_spread(_btn_toggle_mode, 0, 0);
+    lv_obj_set_style_shadow_opa(_btn_toggle_mode, LV_OPA_TRANSP, 0);
     lv_obj_add_event_cb(_btn_toggle_mode, on_airdrop_mode_toggle_clicked, LV_EVENT_CLICKED, this);
 
     _label_btn_mode = lv_label_create(_btn_toggle_mode);
@@ -170,7 +197,7 @@ bool AppAirDrop::close() {
     wifi_manager_stop();
 
     if (_bg_obj != nullptr) {
-        lv_obj_del(_bg_obj);
+        lv_obj_delete_async(_bg_obj);
         _bg_obj = nullptr;
     }
     _btn_back = nullptr;
@@ -180,10 +207,3 @@ bool AppAirDrop::close() {
     _label_btn_mode = nullptr;
     return true;
 }
-
-
-
-
-
-
-

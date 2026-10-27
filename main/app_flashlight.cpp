@@ -14,6 +14,7 @@ AppFlashlight::AppFlashlight()
 AppFlashlight::~AppFlashlight() {}
 
 bool AppFlashlight::run() {
+    if (_bg_obj != nullptr) return true;
     lv_obj_t* scr = lv_scr_act();
 
 
@@ -33,7 +34,10 @@ bool AppFlashlight::run() {
     _btn_toggle = lv_btn_create(_bg_obj);
     lv_obj_set_size(_btn_toggle, 100, 100);
     lv_obj_align(_btn_toggle, LV_ALIGN_CENTER, 0, -20);
-    lv_obj_set_style_radius(_btn_toggle, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_radius(_btn_toggle, 50, 0);
+    lv_obj_set_style_shadow_width(_btn_toggle, 0, 0);
+    lv_obj_set_style_shadow_spread(_btn_toggle, 0, 0);
+    lv_obj_set_style_shadow_opa(_btn_toggle, LV_OPA_TRANSP, 0);
     lv_obj_set_style_bg_color(_btn_toggle, lv_color_hex(0x333333), 0);
     lv_obj_add_event_cb(_btn_toggle, on_btn_toggle_clicked, LV_EVENT_CLICKED, this);
 
@@ -44,6 +48,9 @@ bool AppFlashlight::run() {
 
     // SOS Button
     _btn_sos = lv_btn_create(_bg_obj);
+    lv_obj_set_style_shadow_width(_btn_sos, 0, 0);
+    lv_obj_set_style_shadow_spread(_btn_sos, 0, 0);
+    lv_obj_set_style_shadow_opa(_btn_sos, LV_OPA_TRANSP, 0);
     lv_obj_set_size(_btn_sos, 120, 50);
     lv_obj_align(_btn_sos, LV_ALIGN_BOTTOM_MID, 0, -30);
     lv_obj_set_style_bg_color(_btn_sos, lv_palette_main(LV_PALETTE_RED), 0);
@@ -66,18 +73,17 @@ bool AppFlashlight::back() {
 }
 
 bool AppFlashlight::close() {
+    if (_sos_timer) {
+        lv_timer_del(_sos_timer);
+        _sos_timer = nullptr;
+    }
     if (_bg_obj != nullptr) {
-        lv_obj_del(_bg_obj);
+        lv_obj_delete_async(_bg_obj);
         _bg_obj = nullptr;
     }
     _btn_sos = nullptr;
     _btn_toggle = nullptr;
     _lbl_toggle = nullptr;
-
-    if (_sos_timer) {
-        lv_timer_del(_sos_timer);
-        _sos_timer = nullptr;
-    }
     _is_sos = false;
     
     // Restore normal brightness

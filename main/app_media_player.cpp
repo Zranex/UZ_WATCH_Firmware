@@ -35,6 +35,7 @@ AppMediaPlayer::~AppMediaPlayer() {
 }
 
 bool AppMediaPlayer::run() {
+    if (_bg_obj != nullptr) return true;
     ESP_UTILS_LOGI("AppMediaPlayer run");
     
     // Create a container to hold all our widgets.
@@ -82,6 +83,9 @@ bool AppMediaPlayer::run() {
     lv_obj_set_size(_btn_play, 80, 80);
     lv_obj_align(_btn_play, LV_ALIGN_BOTTOM_MID, 0, -40);
     lv_obj_set_style_radius(_btn_play, 40, 0); // Circular
+    lv_obj_set_style_shadow_width(_btn_play, 0, 0);
+    lv_obj_set_style_shadow_spread(_btn_play, 0, 0);
+    lv_obj_set_style_shadow_opa(_btn_play, LV_OPA_TRANSP, 0);
     lv_obj_set_style_bg_color(_btn_play, lv_color_hex(0xFFFFFF), 0);
     lv_obj_add_event_cb(_btn_play, on_btn_play_clicked, LV_EVENT_CLICKED, this);
     
@@ -96,6 +100,9 @@ bool AppMediaPlayer::run() {
     lv_obj_set_size(_btn_prev, 60, 60);
     lv_obj_align_to(_btn_prev, _btn_play, LV_ALIGN_OUT_LEFT_MID, -30, 0);
     lv_obj_set_style_radius(_btn_prev, 30, 0);
+    lv_obj_set_style_shadow_width(_btn_prev, 0, 0);
+    lv_obj_set_style_shadow_spread(_btn_prev, 0, 0);
+    lv_obj_set_style_shadow_opa(_btn_prev, LV_OPA_TRANSP, 0);
     lv_obj_set_style_bg_color(_btn_prev, lv_color_hex(0x333333), 0);
     lv_obj_add_event_cb(_btn_prev, on_btn_prev_clicked, LV_EVENT_CLICKED, this);
     lv_obj_t* label_prev = lv_label_create(_btn_prev);
@@ -108,6 +115,9 @@ bool AppMediaPlayer::run() {
     lv_obj_set_size(_btn_next, 60, 60);
     lv_obj_align_to(_btn_next, _btn_play, LV_ALIGN_OUT_RIGHT_MID, 30, 0);
     lv_obj_set_style_radius(_btn_next, 30, 0);
+    lv_obj_set_style_shadow_width(_btn_next, 0, 0);
+    lv_obj_set_style_shadow_spread(_btn_next, 0, 0);
+    lv_obj_set_style_shadow_opa(_btn_next, LV_OPA_TRANSP, 0);
     lv_obj_set_style_bg_color(_btn_next, lv_color_hex(0x333333), 0);
     lv_obj_add_event_cb(_btn_next, on_btn_next_clicked, LV_EVENT_CLICKED, this);
     lv_obj_t* label_next = lv_label_create(_btn_next);
@@ -133,7 +143,7 @@ void AppMediaPlayer::force_close() {
 
 bool AppMediaPlayer::close() {
     if (_bg_obj != nullptr) {
-        lv_obj_del(_bg_obj);
+        lv_obj_delete_async(_bg_obj);
         _bg_obj = nullptr;
         _label_source = nullptr;
         _label_title = nullptr;

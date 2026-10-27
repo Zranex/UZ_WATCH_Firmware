@@ -110,6 +110,7 @@ void AppLocalMusic::load_playlist() {
 }
 
 bool AppLocalMusic::run() {
+    if (_bg_obj != nullptr) return true;
     ESP_UTILS_LOGI("Starting AppLocalMusic");
     
     // Do NOT reset playback state if music is already running in background!
@@ -149,6 +150,9 @@ bool AppLocalMusic::run() {
     lv_obj_set_size(_btn_play, 100, 100);
     lv_obj_align(_btn_play, LV_ALIGN_CENTER, 0, 30);
     lv_obj_set_style_radius(_btn_play, 50, 0);
+    lv_obj_set_style_shadow_width(_btn_play, 0, 0);
+    lv_obj_set_style_shadow_spread(_btn_play, 0, 0);
+    lv_obj_set_style_shadow_opa(_btn_play, LV_OPA_TRANSP, 0);
     
     _lbl_play = lv_label_create(_btn_play);
     lv_label_set_text(_lbl_play, LV_SYMBOL_PLAY);
@@ -161,6 +165,9 @@ bool AppLocalMusic::run() {
     lv_obj_set_size(_btn_prev, 70, 70);
     lv_obj_align_to(_btn_prev, _btn_play, LV_ALIGN_OUT_LEFT_MID, -20, 0);
     lv_obj_set_style_radius(_btn_prev, 35, 0);
+    lv_obj_set_style_shadow_width(_btn_prev, 0, 0);
+    lv_obj_set_style_shadow_spread(_btn_prev, 0, 0);
+    lv_obj_set_style_shadow_opa(_btn_prev, LV_OPA_TRANSP, 0);
     lv_obj_set_style_bg_color(_btn_prev, lv_color_hex(0x333333), 0);
     lv_obj_t* lbl_prev = lv_label_create(_btn_prev);
     lv_label_set_text(lbl_prev, LV_SYMBOL_PREV);
@@ -176,6 +183,9 @@ bool AppLocalMusic::run() {
     lv_obj_set_size(_btn_next, 70, 70);
     lv_obj_align_to(_btn_next, _btn_play, LV_ALIGN_OUT_RIGHT_MID, 20, 0);
     lv_obj_set_style_radius(_btn_next, 35, 0);
+    lv_obj_set_style_shadow_width(_btn_next, 0, 0);
+    lv_obj_set_style_shadow_spread(_btn_next, 0, 0);
+    lv_obj_set_style_shadow_opa(_btn_next, LV_OPA_TRANSP, 0);
     lv_obj_set_style_bg_color(_btn_next, lv_color_hex(0x333333), 0);
     lv_obj_t* lbl_next = lv_label_create(_btn_next);
     lv_label_set_text(lbl_next, LV_SYMBOL_NEXT);
@@ -191,6 +201,9 @@ bool AppLocalMusic::run() {
     lv_obj_set_size(_btn_vol_down, 60, 60);
     lv_obj_align(_btn_vol_down, LV_ALIGN_BOTTOM_LEFT, 40, -40);
     lv_obj_set_style_radius(_btn_vol_down, 30, 0);
+    lv_obj_set_style_shadow_width(_btn_vol_down, 0, 0);
+    lv_obj_set_style_shadow_spread(_btn_vol_down, 0, 0);
+    lv_obj_set_style_shadow_opa(_btn_vol_down, LV_OPA_TRANSP, 0);
     lv_obj_set_style_bg_color(_btn_vol_down, lv_color_hex(0x555555), 0);
     lv_obj_t* lbl_vd = lv_label_create(_btn_vol_down);
     lv_label_set_text(lbl_vd, LV_SYMBOL_VOLUME_MID);
@@ -205,6 +218,9 @@ bool AppLocalMusic::run() {
     lv_obj_set_size(_btn_vol_up, 60, 60);
     lv_obj_align(_btn_vol_up, LV_ALIGN_BOTTOM_RIGHT, -40, -40);
     lv_obj_set_style_radius(_btn_vol_up, 30, 0);
+    lv_obj_set_style_shadow_width(_btn_vol_up, 0, 0);
+    lv_obj_set_style_shadow_spread(_btn_vol_up, 0, 0);
+    lv_obj_set_style_shadow_opa(_btn_vol_up, LV_OPA_TRANSP, 0);
     lv_obj_set_style_bg_color(_btn_vol_up, lv_color_hex(0x555555), 0);
     lv_obj_t* lbl_vu = lv_label_create(_btn_vol_up);
     lv_label_set_text(lbl_vu, LV_SYMBOL_VOLUME_MAX);
@@ -272,7 +288,7 @@ bool AppLocalMusic::close() {
     }
 
     if (_bg_obj != nullptr) {
-        lv_obj_del(_bg_obj);
+        lv_obj_delete_async(_bg_obj);
         _bg_obj = nullptr;
     }
     _title_label = nullptr;

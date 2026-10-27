@@ -55,6 +55,9 @@ void AppNotifications::init() {
 
     // Reply Button
     reply_btn = lv_btn_create(container);
+    lv_obj_set_style_shadow_width(reply_btn, 0, 0);
+    lv_obj_set_style_shadow_spread(reply_btn, 0, 0);
+    lv_obj_set_style_shadow_opa(reply_btn, LV_OPA_TRANSP, 0);
     lv_obj_set_size(reply_btn, 80, 30);
     lv_obj_align(reply_btn, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
     lv_obj_set_style_bg_color(reply_btn, lv_color_hex(0x0055FF), 0);
@@ -166,6 +169,9 @@ void AppNotifications::on_banner_reply_clicked(lv_event_t* e) {
 
     for (int i = 0; i < 6; i++) {
         lv_obj_t* btn = lv_btn_create(mbox);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
+        lv_obj_set_style_shadow_spread(btn, 0, 0);
+        lv_obj_set_style_shadow_opa(btn, LV_OPA_TRANSP, 0);
         lv_obj_set_width(btn, LV_PCT(100));
         lv_obj_set_height(btn, 40);
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x333333), 0);
@@ -211,7 +217,7 @@ void AppNotifications::on_banner_reply_selected(lv_event_t* e) {
     }
 
     // Close the popup and hide the banner
-    lv_obj_del(mbox);
+    lv_obj_delete_async(mbox);
     hide();
 }
 

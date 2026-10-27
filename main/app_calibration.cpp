@@ -38,6 +38,9 @@ bool AppCalibration::run() {
     lv_obj_align(_label_info, LV_ALIGN_TOP_MID, 0, 80);
 
     _btn_calibrate = lv_btn_create(_bg_obj);
+    lv_obj_set_style_shadow_width(_btn_calibrate, 0, 0);
+    lv_obj_set_style_shadow_spread(_btn_calibrate, 0, 0);
+    lv_obj_set_style_shadow_opa(_btn_calibrate, LV_OPA_TRANSP, 0);
     lv_obj_set_size(_btn_calibrate, 200, 60);
     lv_obj_align(_btn_calibrate, LV_ALIGN_CENTER, 0, 40);
     lv_obj_set_style_bg_color(_btn_calibrate, lv_color_hex(0x007BFF), 0);
@@ -57,7 +60,7 @@ bool AppCalibration::run() {
 
 bool AppCalibration::close() {
     if (_bg_obj != nullptr) {
-        lv_obj_del(_bg_obj);
+        lv_obj_delete_async(_bg_obj);
         _bg_obj = nullptr;
     }
     _label_info = nullptr;

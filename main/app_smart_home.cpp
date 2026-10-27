@@ -180,6 +180,9 @@ bool AppSmartHome::run() {
     lv_obj_set_size(_wifi_btn, 85, 48);
     lv_obj_align(_wifi_btn, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_set_style_radius(_wifi_btn, 12, 0);
+    lv_obj_set_style_shadow_width(_wifi_btn, 0, 0);
+    lv_obj_set_style_shadow_spread(_wifi_btn, 0, 0);
+    lv_obj_set_style_shadow_opa(_wifi_btn, LV_OPA_TRANSP, 0);
     lv_obj_add_event_cb(_wifi_btn, on_wifi_toggle_clicked, LV_EVENT_CLICKED, this);
 
     _wifi_btn_label = lv_label_create(_wifi_btn);
@@ -204,6 +207,9 @@ bool AppSmartHome::run() {
     lv_obj_set_style_border_color(btn1, lv_color_hex(0x333333), 0);
     lv_obj_set_style_border_width(btn1, 1, 0);
     lv_obj_set_style_radius(btn1, 20, 0);
+    lv_obj_set_style_shadow_width(btn1, 0, 0);
+    lv_obj_set_style_shadow_spread(btn1, 0, 0);
+    lv_obj_set_style_shadow_opa(btn1, LV_OPA_TRANSP, 0);
     lv_obj_set_user_data(btn1, &s_btn_data[0]);
     lv_obj_add_event_cb(btn1, on_btn_clicked, LV_EVENT_CLICKED, this);
 
@@ -250,6 +256,9 @@ bool AppSmartHome::run() {
     lv_obj_set_style_border_color(btn2, lv_color_hex(0x333333), 0);
     lv_obj_set_style_border_width(btn2, 1, 0);
     lv_obj_set_style_radius(btn2, 20, 0);
+    lv_obj_set_style_shadow_width(btn2, 0, 0);
+    lv_obj_set_style_shadow_spread(btn2, 0, 0);
+    lv_obj_set_style_shadow_opa(btn2, LV_OPA_TRANSP, 0);
     lv_obj_set_user_data(btn2, &s_btn_data[1]);
     lv_obj_add_event_cb(btn2, on_btn_clicked, LV_EVENT_CLICKED, this);
 
@@ -305,7 +314,7 @@ bool AppSmartHome::close() {
         _timer = nullptr;
     }
     if (_bg_obj) {
-        lv_obj_delete(_bg_obj);
+        lv_obj_delete_async(_bg_obj);
         _bg_obj = nullptr;
         _wifi_status_label = nullptr;
         _wifi_ip_label = nullptr;

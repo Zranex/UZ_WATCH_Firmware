@@ -58,6 +58,7 @@ void AppNotificationsCustom::clear_history() {
 }
 
 bool AppNotificationsCustom::run() {
+    if (_bg_obj != nullptr) return true;
     ESP_UTILS_LOGI("AppNotificationsCustom running");
     
     // Background
@@ -89,6 +90,9 @@ bool AppNotificationsCustom::run() {
 
     // Clear Button
     btn_clear = lv_btn_create(_bg_obj);
+    lv_obj_set_style_shadow_width(btn_clear, 0, 0);
+    lv_obj_set_style_shadow_spread(btn_clear, 0, 0);
+    lv_obj_set_style_shadow_opa(btn_clear, LV_OPA_TRANSP, 0);
     lv_obj_set_size(btn_clear, 120, 40);
     lv_obj_align(btn_clear, LV_ALIGN_BOTTOM_MID, 0, -20);
     lv_obj_set_style_bg_color(btn_clear, lv_color_hex(0xCC0000), 0);
@@ -108,7 +112,7 @@ bool AppNotificationsCustom::back() {
 bool AppNotificationsCustom::close() {
     ESP_UTILS_LOGI("AppNotificationsCustom closing");
     if (_bg_obj) {
-        lv_obj_del(_bg_obj);
+        lv_obj_delete_async(_bg_obj);
         _bg_obj = nullptr;
         list_container = nullptr;
         btn_clear = nullptr;
@@ -210,6 +214,9 @@ void AppNotificationsCustom::on_reply_clicked(lv_event_t* e) {
 
     for (int i = 0; i < 6; i++) {
         lv_obj_t* btn = lv_btn_create(mbox);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
+        lv_obj_set_style_shadow_spread(btn, 0, 0);
+        lv_obj_set_style_shadow_opa(btn, LV_OPA_TRANSP, 0);
         lv_obj_set_width(btn, LV_PCT(100));
         lv_obj_set_height(btn, 40);
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x333333), 0);
@@ -258,7 +265,7 @@ void AppNotificationsCustom::on_reply_selected(lv_event_t* e) {
     }
 
     // Close the popup
-    lv_obj_del(mbox);
+    lv_obj_delete_async(mbox);
 }
 
 void AppNotificationsCustom::on_clear_clicked(lv_event_t* e) {

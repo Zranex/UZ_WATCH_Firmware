@@ -70,6 +70,9 @@ bool AppVoiceRecorder::run() {
 
     // Record Button
     _btn_record = lv_btn_create(btn_row);
+    lv_obj_set_style_shadow_width(_btn_record, 0, 0);
+    lv_obj_set_style_shadow_spread(_btn_record, 0, 0);
+    lv_obj_set_style_shadow_opa(_btn_record, LV_OPA_TRANSP, 0);
     lv_obj_set_size(_btn_record, 80, 60);
     lv_obj_add_event_cb(_btn_record, btn_record_cb, LV_EVENT_CLICKED, this);
     lv_obj_t* lbl_rec = lv_label_create(_btn_record);
@@ -78,6 +81,9 @@ bool AppVoiceRecorder::run() {
 
     // Play Button
     _btn_play = lv_btn_create(btn_row);
+    lv_obj_set_style_shadow_width(_btn_play, 0, 0);
+    lv_obj_set_style_shadow_spread(_btn_play, 0, 0);
+    lv_obj_set_style_shadow_opa(_btn_play, LV_OPA_TRANSP, 0);
     lv_obj_set_size(_btn_play, 80, 60);
     lv_obj_add_event_cb(_btn_play, btn_play_cb, LV_EVENT_CLICKED, this);
     lv_obj_t* lbl_play = lv_label_create(_btn_play);
@@ -86,6 +92,9 @@ bool AppVoiceRecorder::run() {
 
     // Delete Button
     _btn_delete = lv_btn_create(btn_row);
+    lv_obj_set_style_shadow_width(_btn_delete, 0, 0);
+    lv_obj_set_style_shadow_spread(_btn_delete, 0, 0);
+    lv_obj_set_style_shadow_opa(_btn_delete, LV_OPA_TRANSP, 0);
     lv_obj_set_size(_btn_delete, 80, 60);
     lv_obj_add_event_cb(_btn_delete, btn_delete_cb, LV_EVENT_CLICKED, this);
     lv_obj_t* lbl_del = lv_label_create(_btn_delete);
@@ -129,7 +138,7 @@ bool AppVoiceRecorder::close() {
 
     // 3. Delete UI objects and clear pointers
     if (_bg_obj != nullptr) {
-        lv_obj_del(_bg_obj);
+        lv_obj_delete_async(_bg_obj);
         _bg_obj = nullptr;
     }
     _title_label = nullptr;

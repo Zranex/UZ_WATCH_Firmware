@@ -20,6 +20,7 @@ bool AppAgenda::init() {
 }
 
 bool AppAgenda::run() {
+    if (_bg_obj != nullptr) return true;
     lv_obj_t* scr = lv_scr_act();
     _bg_obj = lv_obj_create(scr);
     lv_obj_set_size(_bg_obj, LV_PCT(100), LV_PCT(100));
@@ -50,7 +51,7 @@ bool AppAgenda::back() {
 
 bool AppAgenda::close() {
     if (_bg_obj) {
-        lv_obj_del(_bg_obj);
+        lv_obj_delete_async(_bg_obj);
         _bg_obj = nullptr;
     }
     _list = nullptr;

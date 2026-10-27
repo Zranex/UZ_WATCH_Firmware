@@ -188,7 +188,10 @@ bool AppWeather::run() {
     _btn_refresh = lv_btn_create(_bg_obj);
     lv_obj_set_size(_btn_refresh, 46, 46);
     lv_obj_align(_btn_refresh, LV_ALIGN_TOP_RIGHT, -20, 45);
-    lv_obj_set_style_radius(_btn_refresh, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_radius(_btn_refresh, 23, 0);
+    lv_obj_set_style_shadow_width(_btn_refresh, 0, 0);
+    lv_obj_set_style_shadow_spread(_btn_refresh, 0, 0);
+    lv_obj_set_style_shadow_opa(_btn_refresh, LV_OPA_TRANSP, 0);
     lv_obj_set_style_bg_color(_btn_refresh, lv_color_hex(0x303134), 0);
     lv_obj_set_style_border_width(_btn_refresh, 0, 0);
     lv_obj_add_event_cb(_btn_refresh, on_refresh_clicked, LV_EVENT_CLICKED, this);
@@ -272,7 +275,7 @@ bool AppWeather::back() {
 
 bool AppWeather::close() {
     if (_bg_obj) {
-        lv_obj_del(_bg_obj);
+        lv_obj_delete_async(_bg_obj);
         _bg_obj = nullptr;
         _label_city = nullptr;
         _label_temp = nullptr;

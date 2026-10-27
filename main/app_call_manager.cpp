@@ -16,7 +16,7 @@ void CallManager::show_incoming_call(const char* caller_name) {
     display_manager_turn_on();
     if (bsp_display_lock(100)) {
         if (_modal != nullptr) {
-            lv_obj_del(_modal);
+            lv_obj_delete_async(_modal);
             _modal = nullptr;
         }
 
@@ -44,6 +44,9 @@ void CallManager::show_incoming_call(const char* caller_name) {
         lv_obj_align(lbl_name, LV_ALIGN_TOP_MID, 0, 110);
         
         lv_obj_t* btn_reject = lv_btn_create(_modal);
+        lv_obj_set_style_shadow_width(btn_reject, 0, 0);
+        lv_obj_set_style_shadow_spread(btn_reject, 0, 0);
+        lv_obj_set_style_shadow_opa(btn_reject, LV_OPA_TRANSP, 0);
         lv_obj_set_size(btn_reject, 130, 60);
         lv_obj_align(btn_reject, LV_ALIGN_BOTTOM_LEFT, 20, -30);
         lv_obj_set_style_bg_color(btn_reject, lv_palette_main(LV_PALETTE_RED), 0);
@@ -56,6 +59,9 @@ void CallManager::show_incoming_call(const char* caller_name) {
         lv_obj_center(lbl_reject);
 
         lv_obj_t* btn_mute = lv_btn_create(_modal);
+        lv_obj_set_style_shadow_width(btn_mute, 0, 0);
+        lv_obj_set_style_shadow_spread(btn_mute, 0, 0);
+        lv_obj_set_style_shadow_opa(btn_mute, LV_OPA_TRANSP, 0);
         lv_obj_set_size(btn_mute, 130, 60);
         lv_obj_align(btn_mute, LV_ALIGN_BOTTOM_RIGHT, -20, -30);
         lv_obj_set_style_bg_color(btn_mute, lv_palette_main(LV_PALETTE_GREY), 0);
@@ -74,7 +80,7 @@ void CallManager::show_incoming_call(const char* caller_name) {
 void CallManager::hide_incoming_call() {
     if (bsp_display_lock(100)) {
         if (_modal != nullptr) {
-            lv_obj_del(_modal);
+            lv_obj_delete_async(_modal);
             _modal = nullptr;
         }
         bsp_display_unlock();

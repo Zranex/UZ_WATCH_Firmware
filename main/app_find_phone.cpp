@@ -62,26 +62,33 @@ bool AppFindPhone::run() {
     lv_obj_set_style_bg_color(_bg_obj, lv_color_hex(0x121212), 0);
     lv_obj_set_style_border_width(_bg_obj, 0, 0);
     lv_obj_set_style_radius(_bg_obj, 0, 0);
-    lv_obj_set_style_shadow_width(_bg_obj, 0, LV_STATE_ANY);
+    lv_obj_set_style_shadow_width(_bg_obj, 0, 0);
+    lv_obj_set_style_shadow_spread(_bg_obj, 0, 0);
+    lv_obj_set_style_shadow_opa(_bg_obj, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(_bg_obj, LV_OBJ_FLAG_SCROLLABLE);
 
-    // 1. Back Button (<) at Top-Left
-    _btn_back = lv_btn_create(_bg_obj);
+    // 1. Back Button (<) at Top-Left (using lv_obj_create to avoid lv_btn default theme shadows)
+    _btn_back = lv_obj_create(_bg_obj);
+    lv_obj_add_flag(_btn_back, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(_btn_back, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(_btn_back, 0, 0);
     lv_obj_set_size(_btn_back, 44, 44);
     lv_obj_align(_btn_back, LV_ALIGN_TOP_LEFT, 15, 15);
-    lv_obj_set_style_radius(_btn_back, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_radius(_btn_back, 22, 0);
     lv_obj_set_style_bg_color(_btn_back, lv_color_hex(0x222222), 0);
+    lv_obj_set_style_bg_opa(_btn_back, LV_OPA_COVER, 0);
     lv_obj_set_style_border_color(_btn_back, lv_color_hex(0x444444), 0);
     lv_obj_set_style_border_width(_btn_back, 1, 0);
-    lv_obj_set_style_shadow_width(_btn_back, 0, LV_STATE_ANY);
-    lv_obj_set_style_shadow_spread(_btn_back, 0, LV_STATE_ANY);
+    lv_obj_set_style_shadow_width(_btn_back, 0, 0);
+    lv_obj_set_style_shadow_spread(_btn_back, 0, 0);
+    lv_obj_set_style_shadow_opa(_btn_back, LV_OPA_TRANSP, 0);
     lv_obj_add_event_cb(_btn_back, on_back_clicked, LV_EVENT_CLICKED, this);
 
     lv_obj_t* lbl_back = lv_label_create(_btn_back);
     lv_obj_set_style_text_font(lbl_back, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(lbl_back, lv_color_hex(0xFFFFFF), 0);
     lv_label_set_text(lbl_back, LV_SYMBOL_LEFT);
-    lv_obj_center(lbl_back);
+    lv_obj_align(lbl_back, LV_ALIGN_CENTER, 0, 0);
 
     // 2. Title
     lv_obj_t* title_label = lv_label_create(_bg_obj);
@@ -95,19 +102,25 @@ bool AppFindPhone::run() {
     lv_obj_set_style_text_font(_status_label, &lv_font_montserrat_14, 0);
     lv_obj_align(_status_label, LV_ALIGN_CENTER, 0, -110);
 
-    // 4. Big Circular Alarm Button (Zero shadow to avoid software box blur WDT)
-    _btn_alarm = lv_btn_create(_bg_obj);
+    // 4. Big Circular Alarm Button (lv_obj_create to avoid lv_btn theme shadow & SW blur WDT)
+    _btn_alarm = lv_obj_create(_bg_obj);
+    lv_obj_add_flag(_btn_alarm, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(_btn_alarm, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(_btn_alarm, 0, 0);
     lv_obj_set_size(_btn_alarm, 170, 170);
     lv_obj_align(_btn_alarm, LV_ALIGN_CENTER, 0, 20);
-    lv_obj_set_style_radius(_btn_alarm, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_shadow_width(_btn_alarm, 0, LV_STATE_ANY);
-    lv_obj_set_style_shadow_spread(_btn_alarm, 0, LV_STATE_ANY);
+    lv_obj_set_style_radius(_btn_alarm, 85, 0);
+    lv_obj_set_style_border_width(_btn_alarm, 0, 0);
+    lv_obj_set_style_shadow_width(_btn_alarm, 0, 0);
+    lv_obj_set_style_shadow_spread(_btn_alarm, 0, 0);
+    lv_obj_set_style_shadow_opa(_btn_alarm, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_opa(_btn_alarm, LV_OPA_COVER, 0);
     lv_obj_add_event_cb(_btn_alarm, btn_alarm_cb, LV_EVENT_CLICKED, this);
     
     _lbl_alarm = lv_label_create(_btn_alarm);
     lv_obj_set_style_text_font(_lbl_alarm, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_align(_lbl_alarm, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_center(_lbl_alarm);
+    lv_obj_align(_lbl_alarm, LV_ALIGN_CENTER, 0, 0);
 
     // 5. Periodic status refresh timer (checks BLE connection)
     _poll_timer = lv_timer_create([](lv_timer_t* t) {

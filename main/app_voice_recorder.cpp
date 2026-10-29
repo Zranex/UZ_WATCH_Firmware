@@ -11,6 +11,7 @@ extern const lv_image_dsc_t icon_voice_recorder;
 extern esp_codec_dev_handle_t bsp_audio_codec_microphone_init(void);
 extern esp_codec_dev_handle_t spk_codec_dev;
 extern "C" void bsp_audio_power_amp_enable(bool enable);
+extern "C" void bsp_audio_standby(void);
 
 AppVoiceRecorder::AppVoiceRecorder() 
     : esp_brookesia::systems::phone::App("Ses Kaydi", &icon_voice_recorder, true),
@@ -135,6 +136,8 @@ bool AppVoiceRecorder::close() {
         esp_codec_dev_close(_mic_codec);
         _mic_codec_opened = false;
     }
+    bsp_audio_power_amp_enable(false);
+    bsp_audio_standby();
 
     // 3. Delete UI objects and clear pointers
     if (_bg_obj != nullptr) {
@@ -449,6 +452,7 @@ void AppVoiceRecorder::audio_task(void *pvParameter) {
         self->_is_playing = false;
     }
 
+    bsp_audio_standby();
     free(buffer);
     
     if (!self->_is_app_closed && bsp_display_lock(100)) {

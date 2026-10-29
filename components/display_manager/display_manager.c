@@ -32,6 +32,7 @@ static uint8_t current_brightness = 50; // 50% default: saves ~50% AMOLED power 
 static const char *TAG = "DisplayMgr";
 
 static bool display_on = true;
+static volatile bool s_sleep_requested = false;
 static uint32_t timeout_ms = 5000;
 static void (*wake_cb)(void) = NULL;
 static void (*sleep_cb)(void) = NULL;
@@ -70,6 +71,7 @@ static void display_turn_off_internal(void) {
     }
 #endif
     display_on = false;
+    s_sleep_requested = false;
     s_last_sleep_tick = xTaskGetTickCount();
 }
 
@@ -77,8 +79,14 @@ void display_manager_turn_off(void) {
     display_turn_off_internal();
 }
 
+void display_manager_request_off(void) {
+    // Asynchronous sleep request safe to call from inside LVGL click callbacks without deadlocking LVGL mutex!
+    s_sleep_requested = true;
+}
+
 void display_manager_turn_on(void) {
     static bool is_waking = false;
+    s_sleep_requested = false;
     if (!display_on && !is_waking) {
         is_waking = true;
         ESP_LOGI(TAG, "Turning display on (Wake Panel + Resume LVGL + 240MHz Boost)");
@@ -101,7 +109,7 @@ void display_manager_turn_on(void) {
         display_on = true;
 
         if (wake_cb) {
-            wake_cb(); // This will trigger AppLockscreen::show_again()
+            wake_cb(); // This will trigger AppLockscreen::show_again() if on home screen
         }
         is_waking = false;
     }
@@ -152,6 +160,12 @@ static void display_manager_task(void *arg) {
     ESP_LOGI(TAG, "Display manager task started (Power Optimized)");
     while (1) {
         if (display_on) {
+            if (s_sleep_requested) {
+                s_sleep_requested = false;
+                display_turn_off_internal();
+                vTaskDelay(pdMS_TO_TICKS(100));
+                continue;
+            }
             uint32_t inactive = 0;
             if (lvgl_port_lock(50)) {
                 inactive = lv_disp_get_inactive_time(NULL);

@@ -7,7 +7,6 @@
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
 
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -18,7 +17,11 @@ esp_err_t bsp_extra_init(void);
 esp_err_t bsp_battery_init(void);
 int bsp_battery_get_percent(void);
 int bsp_battery_get_voltage_mv(void);
+int bsp_battery_get_vbus_mv(void);
 bool bsp_battery_is_charging(void);
+bool bsp_battery_is_vbus_present(void);
+void bsp_pmu_log_diagnostics(void);
+void bsp_vibrate_pulse(uint32_t duration_ms);
 esp_err_t bsp_pmu_set_amoled_power(bool enable);
 
 #ifdef __cplusplus

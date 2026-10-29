@@ -3,7 +3,10 @@
 #include <string.h>
 #include "app_notifications_custom.hpp"
 #include "bsp/esp-bsp.h"
+#include "bsp_board_extra.h"
 #include "display_manager.h"
+#include "app_power.hpp"
+#include "app_school.hpp"
 
 extern "C" {
 #include "ble_manager.h"
@@ -250,8 +253,23 @@ extern "C" void app_notifications_show_from_ble(const char* payload) {
         
         // Push notification to history (thread-safe internally)
         AppNotificationsCustom::push_notification(sender, message, notif_id);
+
+        // Silent & Power-Saving Guard:
+        // In School Mode, Super Saver Mode, or during an active school lesson while screen is off,
+        // save notification to history silently WITHOUT waking AMOLED!
+        bool silent_guard = (AppPower::get_active_profile() == POWER_PROFILE_SCHOOL) ||
+                            (AppPower::get_active_profile() == POWER_PROFILE_SUPER_SAVER) ||
+                            AppSchool::is_lesson_in_progress();
+        if (silent_guard && !display_manager_is_on()) {
+            if (AppPower::get_active_profile() != POWER_PROFILE_SUPER_SAVER) {
+                bsp_vibrate_pulse(60); // Subtle silent haptic tap without waking AMOLED
+            }
+            ESP_LOGI(TAG, "Silent/Lesson guard active: notification saved without waking AMOLED");
+            return;
+        }
         
-        // Wake the display so the user sees the incoming notification
+        // Wake the display + gentle wrist tap so the user sees the incoming notification
+        bsp_vibrate_pulse(90);
         display_manager_turn_on();
 
         // Wait up to 1000ms for LVGL lock since we're in the BLE task

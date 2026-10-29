@@ -7,6 +7,7 @@ extern "C" const lv_image_dsc_t icon_airdrop;
 #include "airdrop_manager.hpp"
 #include "esp_log.h"
 #include "wifi_manager.h"
+#include "display_manager.h"
 
 static const char *TAG = "AppAirDrop";
 
@@ -25,8 +26,10 @@ static void on_airdrop_back_clicked(lv_event_t* e) {
 static void on_airdrop_mode_toggle_clicked(lv_event_t* e) {
     AppAirDrop* app = (AppAirDrop*)lv_event_get_user_data(e);
     if (!app) return;
-    
-    // Stop server first to avoid use-after-free on socket handles
+
+    display_manager_reset_timer();
+
+    // Stop server FIRST to avoid LwIP socket use-after-free when switching interfaces
     AirDropManager::stop_server();
 
     if (wifi_manager_is_ap_active()) {
@@ -49,7 +52,8 @@ static void on_airdrop_mode_toggle_clicked(lv_event_t* e) {
 AppAirDrop::AppAirDrop() 
     : esp_brookesia::systems::phone::App("AirDrop", &icon_airdrop, true),
       _bg_obj(nullptr), _btn_back(nullptr), _label_status(nullptr), _label_desc(nullptr),
-      _btn_toggle_mode(nullptr), _label_btn_mode(nullptr), _poll_timer(nullptr) {
+      _btn_toggle_mode(nullptr), _label_btn_mode(nullptr), _poll_timer(nullptr),
+      _saved_timeout_ms(5000) {
 }
 
 AppAirDrop::~AppAirDrop() {
@@ -57,6 +61,11 @@ AppAirDrop::~AppAirDrop() {
 
 bool AppAirDrop::run() {
     if (_bg_obj != nullptr) return true;
+
+    // Keep screen & SoftAP alive for 90s while user connects phone & transfers files
+    uint32_t cur_tmo = display_manager_get_timeout();
+    _saved_timeout_ms = (cur_tmo > 0 && cur_tmo < 60000) ? cur_tmo : 5000;
+    display_manager_set_timeout(90000);
 
     lv_obj_t* scr = lv_scr_act();
     _bg_obj = lv_obj_create(scr);
@@ -108,7 +117,7 @@ bool AppAirDrop::run() {
     lv_obj_set_style_text_align(_label_desc, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(_label_desc, LV_ALIGN_CENTER, 0, -20);
 
-    // Mode Toggle Button (Hotspot / Home Wi-Fi) (lv_obj_create to avoid lv_btn theme shadows)
+    // Mode Toggle Button (Hotspot / Home Wi-Fi)
     _btn_toggle_mode = lv_obj_create(_bg_obj);
     lv_obj_add_flag(_btn_toggle_mode, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(_btn_toggle_mode, LV_OBJ_FLAG_SCROLLABLE);
@@ -131,13 +140,14 @@ bool AppAirDrop::run() {
     lv_label_set_text(_label_btn_mode, LV_SYMBOL_HOME " Ev Wi-Fi'a Gec");
     lv_obj_center(_label_btn_mode);
 
-    // Default to SoftAP (Hotspot) for instant, router-less 100% reliable connection everywhere
+    // Cleanly stop any prior server instance before configuring SoftAP
+    AirDropManager::stop_server();
+
     if (!wifi_manager_is_active() || !wifi_manager_is_ap_active()) {
         ESP_LOGI(TAG, "AirDrop started -> launching standalone SoftAP Hotspot...");
         wifi_manager_start_ap("UZ_WATCH_AirDrop", NULL);
     }
 
-    // Initialize SD Card & start HTTP Server
     if (AirDropManager::init() == ESP_OK) {
         if (AirDropManager::start_server() == ESP_OK) {
             ESP_LOGI(TAG, "AirDrop HTTP Server is active.");
@@ -156,10 +166,8 @@ bool AppAirDrop::run() {
         if (!app || !app->_label_desc) return;
 
         if (wifi_manager_is_ap_active()) {
-            char display_text[160];
-            snprintf(display_text, sizeof(display_text),
+            lv_label_set_text(app->_label_desc,
                 "Hotspot Aktif (Internetsiz)!\n\n1. Telefonda baglanin:\nSSID: UZ_WATCH_AirDrop\n\n2. Tarayicida acin:\nhttp://192.168.4.1");
-            lv_label_set_text(app->_label_desc, display_text);
             if (app->_label_status) lv_obj_set_style_text_color(app->_label_status, lv_color_hex(0x00E676), 0);
             if (app->_label_btn_mode) lv_label_set_text(app->_label_btn_mode, LV_SYMBOL_HOME " Ev Wi-Fi'a Gec");
             return;
@@ -178,7 +186,8 @@ bool AppAirDrop::run() {
         } else if (wifi_manager_is_active()) {
             lv_label_set_text(app->_label_desc, "Wi-Fi Baglaniyor...\nLutfen bekleyin.");
         } else {
-            lv_label_set_text(app->_label_desc, "Wi-Fi Kapali!\nAsagidan Hotspot acabilirsiniz.");
+            lv_label_set_text(app->_label_desc, "Uyku tasarrufu: Wi-Fi kapandi.\nAsagidan tekrar acabilirsiniz.");
+            if (app->_label_btn_mode) lv_label_set_text(app->_label_btn_mode, LV_SYMBOL_WIFI " Hotspot Yeniden Ac");
         }
     }, 1000, this);
 
@@ -195,9 +204,11 @@ bool AppAirDrop::close() {
         lv_timer_del(_poll_timer);
         _poll_timer = nullptr;
     }
+
+    // Restore normal smartwatch display timeout (5s)
+    display_manager_set_timeout(_saved_timeout_ms);
+
     AirDropManager::stop_server();
-    vTaskDelay(pdMS_TO_TICKS(50));
-    // Stop Wi-Fi to preserve battery
     wifi_manager_stop();
 
     if (_bg_obj != nullptr) {

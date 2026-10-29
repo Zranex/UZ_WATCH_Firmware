@@ -497,10 +497,9 @@ void AppLocalMusic::audio_task(void *pvParameter) {
     // Cleanup when app closes
     if (f) fclose(f);
     if (codec_opened && spk_codec_dev) esp_codec_dev_close(spk_codec_dev);
-    if (pa_enabled) {
-        bsp_audio_power_amp_enable(false);
-        pa_enabled = false;
-    }
+    bsp_audio_power_amp_enable(false);
+    bsp_audio_standby();
+    pa_enabled = false;
     if (buf) free(buf);
     
     app->_audio_task_handle = NULL;

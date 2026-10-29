@@ -38,6 +38,7 @@ extern "C" {
 #include "app_agenda.hpp"
 #include "app_transit.hpp"
 #include "app_airdrop.hpp"
+#include "airdrop_manager.hpp"
 #include "app_school.hpp"
 #include "app_power.hpp"
 
@@ -165,9 +166,19 @@ extern "C" void app_main(void)
         spk_codec_dev = bsp_audio_codec_speaker_init();
         if(spk_codec_dev) {
             ESP_UTILS_LOGI("Speaker initialized successfully!");
-            esp_codec_dev_set_out_vol(spk_codec_dev, 70); // Set default volume to 70%
-            bsp_audio_power_amp_enable(false); // Shut off PA when silent to save 20mA
-            esp_codec_dev_close(spk_codec_dev); // Put ES8311 DAC in deep standby until an app plays sound
+            esp_codec_dev_sample_info_t init_fs = {
+                .bits_per_sample = 16,
+                .channel = 1,
+                .channel_mask = 0,
+                .sample_rate = 22050,
+                .mclk_multiple = 0,
+            };
+            if (esp_codec_dev_open(spk_codec_dev, &init_fs) == ESP_OK) {
+                esp_codec_dev_set_out_vol(spk_codec_dev, 70);
+                esp_codec_dev_close(spk_codec_dev); // Actually triggers es8311_suspend() + I2S TX disable!
+            }
+            bsp_audio_power_amp_enable(false); // Shut off NS4150B PA when silent
+            bsp_audio_standby();               // Guarantee both I2S TX & RX clocks/DMA are 100% disabled
         } else {
             ESP_UTILS_LOGE("Failed to initialize speaker codec!");
         }
@@ -221,12 +232,9 @@ extern "C" void app_main(void)
     display_manager_set_sleep_cb([]() {
         pedometer_set_low_power(true);
         if (wifi_manager_is_active()) {
-            if (wifi_manager_is_ap_active()) {
-                ESP_LOGI("Power", "Screen sleeping: SoftAP active, stopping Wi-Fi to preserve battery");
-                wifi_manager_stop();
-            } else {
-                esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
-            }
+            ESP_LOGI("Power", "Screen sleeping: cleanly stopping HTTP server & Wi-Fi radio to eliminate standby drain");
+            AirDropManager::stop_server();
+            wifi_manager_stop();
         }
         if (bsp_display_lock(1000)) {
             AppMediaPlayer::force_close();

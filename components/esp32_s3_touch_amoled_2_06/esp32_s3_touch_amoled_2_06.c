@@ -209,15 +209,15 @@ esp_err_t bsp_audio_init(const i2s_std_config_t *i2s_config)
         p_i2s_cfg = i2s_config;
     }
 
+    /* Keep I2S TX/RX in READY (disabled) state until esp_codec_dev_open() actually plays/records.
+     * Enabling here previously held ESP_PM_APB_FREQ_MAX + NO_LIGHT_SLEEP 24/7 and caused 92Hz RX DMA interrupts! */
     if (i2s_tx_chan != NULL)
     {
         ESP_GOTO_ON_ERROR(i2s_channel_init_std_mode(i2s_tx_chan, p_i2s_cfg), err, TAG, "I2S channel initialization failed");
-        ESP_GOTO_ON_ERROR(i2s_channel_enable(i2s_tx_chan), err, TAG, "I2S enabling failed");
     }
     if (i2s_rx_chan != NULL)
     {
         ESP_GOTO_ON_ERROR(i2s_channel_init_std_mode(i2s_rx_chan, p_i2s_cfg), err, TAG, "I2S channel initialization failed");
-        ESP_GOTO_ON_ERROR(i2s_channel_enable(i2s_rx_chan), err, TAG, "I2S enabling failed");
     }
 
     audio_codec_i2s_cfg_t i2s_cfg = {
@@ -442,6 +442,20 @@ void bsp_audio_power_amp_enable(bool enable)
     gpio_config(&io_conf);
     gpio_set_level(BSP_POWER_AMP_IO, enable ? 1 : 0);
     ESP_LOGI(TAG, "Audio Power Amp: %s", enable ? "ON" : "OFF");
+}
+
+void bsp_audio_standby(void)
+{
+    esp_log_level_t prev = esp_log_level_get("i2s_common");
+    esp_log_level_set("i2s_common", ESP_LOG_NONE);
+    if (i2s_rx_chan != NULL) {
+        (void)i2s_channel_disable(i2s_rx_chan);
+    }
+    if (i2s_tx_chan != NULL) {
+        (void)i2s_channel_disable(i2s_tx_chan);
+    }
+    esp_log_level_set("i2s_common", prev);
+    ESP_LOGI(TAG, "Audio I2S TX/RX placed in zero-clock standby");
 }
 
 #if LVGL_VERSION_MAJOR >= 9

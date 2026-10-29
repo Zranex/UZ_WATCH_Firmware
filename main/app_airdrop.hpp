@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdint.h>
 #include "esp_brookesia.hpp"
 
 class AppAirDrop : public esp_brookesia::systems::phone::App {
@@ -20,6 +21,5 @@ public:
     lv_obj_t* _btn_toggle_mode;
     lv_obj_t* _label_btn_mode;
     lv_timer_t* _poll_timer;
+    uint32_t _saved_timeout_ms;
 };
-
-

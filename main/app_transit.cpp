@@ -206,10 +206,14 @@ void AppTransit::update_active_card() {
 #endif
 }
 
+static uint32_t s_saved_qr_timeout_ms = 5000;
+
 void AppTransit::show_card_modal() {
     if (_modal_card != nullptr) return;
 
     _saved_brightness = display_manager_get_brightness();
+    s_saved_qr_timeout_ms = display_manager_get_timeout();
+    display_manager_set_timeout(20000); // 20s timeout while scanning QR at turnstiles
     bsp_display_brightness_set(100); // 100% max brightness for optical barcode/QR scanners
 
     _modal_card = lv_obj_create(_bg_obj);
@@ -275,14 +279,23 @@ void AppTransit::show_card_modal() {
     lv_label_set_text(_lbl_card_id, "0474 **** **** 9012");
     lv_obj_align(_lbl_card_id, LV_ALIGN_BOTTOM_MID, 0, -45);
 
-    // Navigation Buttons: Prev [<] and Next [>]
-    lv_obj_t* btn_prev = lv_btn_create(_card_obj);
+    // Navigation Buttons: Prev [<] and Next [>] (zero-shadow flat pills)
+    lv_obj_t* btn_prev = lv_obj_create(_card_obj);
+    lv_obj_add_flag(btn_prev, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(btn_prev, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(btn_prev, 0, 0);
     lv_obj_set_size(btn_prev, 60, 36);
     lv_obj_align(btn_prev, LV_ALIGN_BOTTOM_LEFT, 20, -6);
     lv_obj_set_style_radius(btn_prev, 18, 0);
     lv_obj_set_style_bg_color(btn_prev, lv_color_hex(0x1F2937), 0);
+    lv_obj_set_style_bg_opa(btn_prev, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(btn_prev, lv_color_hex(0x374151), 0);
+    lv_obj_set_style_border_width(btn_prev, 1, 0);
     lv_obj_set_style_shadow_width(btn_prev, 0, 0);
+    lv_obj_set_style_shadow_spread(btn_prev, 0, 0);
+    lv_obj_set_style_shadow_opa(btn_prev, LV_OPA_TRANSP, 0);
     lv_obj_add_event_cb(btn_prev, [](lv_event_t* e) {
+        display_manager_reset_timer();
         AppTransit* app = (AppTransit*)lv_event_get_user_data(e);
         if (app) {
             app->_current_card_index = (app->_current_card_index + 2) % 3;
@@ -290,16 +303,26 @@ void AppTransit::show_card_modal() {
         }
     }, LV_EVENT_CLICKED, this);
     lv_obj_t* lbl_p = lv_label_create(btn_prev);
-    lv_label_set_text(lbl_p, "<");
+    lv_obj_set_style_text_color(lbl_p, lv_color_hex(0xFFFFFF), 0);
+    lv_label_set_text(lbl_p, LV_SYMBOL_LEFT);
     lv_obj_center(lbl_p);
 
-    lv_obj_t* btn_next = lv_btn_create(_card_obj);
+    lv_obj_t* btn_next = lv_obj_create(_card_obj);
+    lv_obj_add_flag(btn_next, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(btn_next, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(btn_next, 0, 0);
     lv_obj_set_size(btn_next, 60, 36);
     lv_obj_align(btn_next, LV_ALIGN_BOTTOM_RIGHT, -20, -6);
     lv_obj_set_style_radius(btn_next, 18, 0);
     lv_obj_set_style_bg_color(btn_next, lv_color_hex(0x1F2937), 0);
+    lv_obj_set_style_bg_opa(btn_next, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(btn_next, lv_color_hex(0x374151), 0);
+    lv_obj_set_style_border_width(btn_next, 1, 0);
     lv_obj_set_style_shadow_width(btn_next, 0, 0);
+    lv_obj_set_style_shadow_spread(btn_next, 0, 0);
+    lv_obj_set_style_shadow_opa(btn_next, LV_OPA_TRANSP, 0);
     lv_obj_add_event_cb(btn_next, [](lv_event_t* e) {
+        display_manager_reset_timer();
         AppTransit* app = (AppTransit*)lv_event_get_user_data(e);
         if (app) {
             app->_current_card_index = (app->_current_card_index + 1) % 3;
@@ -307,7 +330,8 @@ void AppTransit::show_card_modal() {
         }
     }, LV_EVENT_CLICKED, this);
     lv_obj_t* lbl_n = lv_label_create(btn_next);
-    lv_label_set_text(lbl_n, ">");
+    lv_obj_set_style_text_color(lbl_n, lv_color_hex(0xFFFFFF), 0);
+    lv_label_set_text(lbl_n, LV_SYMBOL_RIGHT);
     lv_obj_center(lbl_n);
 
     // Close button in center
@@ -339,6 +363,7 @@ void AppTransit::show_card_modal() {
 
 void AppTransit::hide_card_modal() {
     if (_modal_card != nullptr) {
+        display_manager_set_timeout(s_saved_qr_timeout_ms);
         bsp_display_brightness_set(_saved_brightness);
         lv_obj_delete_async(_modal_card);
         _modal_card = nullptr;

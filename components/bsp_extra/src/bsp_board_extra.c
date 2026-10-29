@@ -23,7 +23,6 @@
 static const char *TAG = "bsp_extra_board";
 
 static i2c_master_bus_handle_t bus_handle;
-
 static i2c_master_dev_handle_t rtc_dev_handle = NULL;
 
 esp_err_t bsp_rtc_init(void)
@@ -43,7 +42,6 @@ esp_err_t bsp_rtc_init(void)
     return ESP_OK;
 }
 
-// read function using new API
 int rtc_register_read(uint8_t regAddr, uint8_t *data, uint8_t len) {
     esp_err_t ret = i2c_master_transmit_receive(rtc_dev_handle, &regAddr, 1, data, len, I2C_MASTER_TIMEOUT_MS);
     if (ret != ESP_OK) {
@@ -53,7 +51,6 @@ int rtc_register_read(uint8_t regAddr, uint8_t *data, uint8_t len) {
     return 0;
 }
 
-// write function using new API
 int rtc_register_write(uint8_t regAddr, uint8_t *data, uint8_t len) {
     uint8_t *buffer = (uint8_t *)malloc(len + 1);
     if (!buffer) return -1;
@@ -70,8 +67,73 @@ int rtc_register_write(uint8_t regAddr, uint8_t *data, uint8_t len) {
     return 0;
 }
 
-// AXP2101 Battery Telemetry
+// AXP2101 Battery Telemetry & Haptic Motor (ALDO3 + GPIO18)
 static i2c_master_dev_handle_t axp_dev_handle = NULL;
+static esp_timer_handle_t s_vib_off_timer = NULL;
+#define BSP_VIB_MOTOR_GPIO GPIO_NUM_18
+
+static void axp_set_aldo3_enable(bool enable) {
+    if (!axp_dev_handle) return;
+    uint8_t reg = 0x90, val = 0;
+    if (i2c_master_transmit_receive(axp_dev_handle, &reg, 1, &val, 1, I2C_MASTER_TIMEOUT_MS) == ESP_OK) {
+        uint8_t next = enable ? (val | (1 << 2)) : (val & ~(1 << 2));
+        if (next != val) {
+            uint8_t wr[2] = {0x90, next};
+            (void)i2c_master_transmit(axp_dev_handle, wr, 2, I2C_MASTER_TIMEOUT_MS);
+        }
+    }
+}
+
+static void vib_off_timer_cb(void* arg) {
+    gpio_set_level(BSP_VIB_MOTOR_GPIO, 0);
+    axp_set_aldo3_enable(false);
+}
+
+void bsp_vibrate_pulse(uint32_t duration_ms) {
+    if (!axp_dev_handle || !s_vib_off_timer) return;
+    if (duration_ms < 20) duration_ms = 20;
+    if (duration_ms > 500) duration_ms = 500;
+    axp_set_aldo3_enable(true);
+    gpio_set_level(BSP_VIB_MOTOR_GPIO, 1);
+    esp_timer_stop(s_vib_off_timer);
+    (void)esp_timer_start_once(s_vib_off_timer, (uint64_t)duration_ms * 1000ULL);
+}
+
+static bool axp_read_reg(uint8_t reg, uint8_t *out, size_t len) {
+    if (!axp_dev_handle) return false;
+    return (i2c_master_transmit_receive(axp_dev_handle, &reg, 1, out, len, I2C_MASTER_TIMEOUT_MS) == ESP_OK);
+}
+
+void bsp_pmu_log_diagnostics(void) {
+    if (!axp_dev_handle) return;
+    uint8_t st0 = 0, st1 = 0, soc = 0, dcdc = 0, ldo0 = 0, ldo1 = 0;
+    uint8_t vbat_b[2] = {0}, vbus_b[2] = {0}, vsys_b[2] = {0};
+
+    axp_read_reg(0x00, &st0, 1);
+    axp_read_reg(0x01, &st1, 1);
+    axp_read_reg(0xA4, &soc, 1);
+    axp_read_reg(0x80, &dcdc, 1);
+    axp_read_reg(0x90, &ldo0, 1);
+    axp_read_reg(0x91, &ldo1, 1);
+    axp_read_reg(0x34, vbat_b, 2);
+    axp_read_reg(0x38, vbus_b, 2);
+    axp_read_reg(0x3A, vsys_b, 2);
+
+    int vbat_mv = ((vbat_b[0] & 0x3F) << 8) | vbat_b[1];
+    int vbus_mv = ((vbus_b[0] & 0x3F) << 8) | vbus_b[1];
+    int vsys_mv = ((vsys_b[0] & 0x3F) << 8) | vsys_b[1];
+    bool vbus_good = (st0 & (1 << 5)) != 0;
+    bool bat_present = (st0 & (1 << 3)) != 0;
+    uint8_t chg_dir = (st1 >> 5) & 0x03; // 00=standby, 01=charging, 10=discharging
+    uint8_t chg_st = st1 & 0x07;
+
+    ESP_LOGW(TAG, "=== AXP2101 LIVE TELEMETRY ===");
+    ESP_LOGW(TAG, "SOC=%u%% | VBAT=%d mV | VSYS=%d mV | VBUS=%d mV (USB=%s, BAT=%s)",
+             soc, vbat_mv, vsys_mv, vbus_mv, vbus_good ? "YES" : "NO", bat_present ? "YES" : "NO");
+    ESP_LOGW(TAG, "STAT0=0x%02X STAT1=0x%02X (dir=%u chg_state=%u) | DCDC=0x%02X LDO0=0x%02X LDO1=0x%02X",
+             st0, st1, chg_dir, chg_st, dcdc, ldo0, ldo1);
+    ESP_LOGW(TAG, "==============================");
+}
 
 esp_err_t bsp_battery_init(void) {
     i2c_device_config_t dev_config = {
@@ -82,38 +144,91 @@ esp_err_t bsp_battery_init(void) {
         .flags = { .disable_ack_check = 0 }
     };
     esp_err_t ret = i2c_master_bus_add_device(bus_handle, &dev_config, &axp_dev_handle);
-    if(ret != ESP_OK) return ret;
+    if (ret != ESP_OK) return ret;
 
-    // AXP2101 Power & ADC configuration:
     // 1. Register 0x30 (ADC Channel Control):
     // Enable Batt (bit 5), Sys (bit 4), VBUS (bit 3), Temp (bit 2), Fuel gauge (bit 0), DISABLE TS Pin (bit 1 = 0)
     uint8_t reg_0x30_data[2] = {0x30, 0x3D};
     (void)i2c_master_transmit(axp_dev_handle, reg_0x30_data, 2, I2C_MASTER_TIMEOUT_MS);
 
     // 2. Register 0x62 (ICC Charge Set):
-    // Set 400mA fast charge for 500mAh LiPo (0x08 = 400mA)
-    uint8_t reg_0x62_data[2] = {0x62, 0x08};
+    // Set 300mA safe fast charge for watch LiPo (0x09 = 300mA, gentle on battery health & thermals)
+    uint8_t reg_0x62_data[2] = {0x62, 0x09};
     (void)i2c_master_transmit(axp_dev_handle, reg_0x62_data, 2, I2C_MASTER_TIMEOUT_MS);
 
-    // 3. Register 0x24: Set V_OFF cut-off to 3.4V (protects battery health)
+    // 3. Register 0x64 (CV Charge Voltage): 4.20V (0x03 = 4.2V)
+    uint8_t reg_0x64_data[2] = {0x64, 0x03};
+    (void)i2c_master_transmit(axp_dev_handle, reg_0x64_data, 2, I2C_MASTER_TIMEOUT_MS);
+
+    // 4. Register 0x24: Set V_OFF cut-off to 3.3V (0x03) / 3.4V (0x04) to prevent deep over-discharge
     uint8_t reg_0x24_data[2] = {0x24, 0x04};
     (void)i2c_master_transmit(axp_dev_handle, reg_0x24_data, 2, I2C_MASTER_TIMEOUT_MS);
 
-    ESP_LOGI(TAG, "AXP2101 PMIC configured (ADC active, TS disabled, 400mA charging, 3.4V cutoff)");
+    // 5. Register 0x18: Ensure Charger + Fuel Gauge + Cell Battery Charge Control enabled (bit 1 = Charger EN, bit 3 = Gauge EN)
+    uint8_t reg18 = 0;
+    if (axp_read_reg(0x18, &reg18, 1)) {
+        reg18 |= (1 << 1) | (1 << 3);
+        uint8_t reg_0x18_data[2] = {0x18, reg18};
+        (void)i2c_master_transmit(axp_dev_handle, reg_0x18_data, 2, I2C_MASTER_TIMEOUT_MS);
+    }
+
+    // 6. Shut down ALL unconnected AXP2101 rails per PCB schematic:
+    //    - DCDC2, DCDC3, DCDC4, DCDC5 are NC -> keep ONLY DCDC1 (VCC3V3) enabled (0x80 = 0x01)
+    //    - ALDO4, BLDO1, BLDO2, CPUSLDO, DLDO1, DLDO2 are NC, ALDO3 (Motor) idle OFF -> keep ONLY ALDO1 (A3V3) + ALDO2 (DSI_PWR_EN) ON (0x90 = 0x03, 0x91 = 0x00)
+    uint8_t dcdc_cfg = 0;
+    if (axp_read_reg(0x80, &dcdc_cfg, 1)) {
+        dcdc_cfg = (dcdc_cfg & 0xE0) | 0x01; // Only DCDC1 ON
+        uint8_t wr_dcdc[2] = {0x80, dcdc_cfg};
+        (void)i2c_master_transmit(axp_dev_handle, wr_dcdc, 2, I2C_MASTER_TIMEOUT_MS);
+    }
+    uint8_t wr_aldo3_v[2] = {0x94, 0x1C}; // ALDO3 = 3.3V (when motor pulsed)
+    (void)i2c_master_transmit(axp_dev_handle, wr_aldo3_v, 2, I2C_MASTER_TIMEOUT_MS);
+    uint8_t wr_ldo0[2] = {0x90, 0x03}; // Only ALDO1 + ALDO2 ON
+    (void)i2c_master_transmit(axp_dev_handle, wr_ldo0, 2, I2C_MASTER_TIMEOUT_MS);
+    uint8_t wr_ldo1[2] = {0x91, 0x00}; // DLDO2 OFF
+    (void)i2c_master_transmit(axp_dev_handle, wr_ldo1, 2, I2C_MASTER_TIMEOUT_MS);
+
+    // 7. Init GPIO18 (Coin Vibration Motor NPN driver) LOW + one-shot shutoff timer
+    gpio_config_t vib_io = {
+        .pin_bit_mask = (1ULL << BSP_VIB_MOTOR_GPIO),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&vib_io);
+    gpio_set_level(BSP_VIB_MOTOR_GPIO, 0);
+    if (!s_vib_off_timer) {
+        esp_timer_create_args_t t_args = {
+            .callback = vib_off_timer_cb,
+            .arg = NULL,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "vib_off",
+            .skip_unhandled_events = true,
+        };
+        (void)esp_timer_create(&t_args, &s_vib_off_timer);
+    }
+
+    ESP_LOGI(TAG, "AXP2101 PMIC optimized (3 unused DCDCs + 7 unused LDOs shut down; 300mA/4.2V chg; Haptic ready)");
+    bsp_pmu_log_diagnostics();
     return ESP_OK;
 }
 
 static volatile int s_cached_battery_percent = -1;
 static volatile bool s_cached_battery_charging = false;
-static int64_t s_last_battery_read_us = 0;
-static int64_t s_last_charging_read_us = 0;
+static volatile bool s_cached_vbus_present = false;
+static int64_t s_last_battery_read_us = -10000000LL;
+static int64_t s_last_charging_read_us = -10000000LL;
+static int64_t s_last_voltage_read_us = -10000000LL;
+static int s_cached_voltage_mv = 3850;
+static int64_t s_last_vbus_read_us = -10000000LL;
+static int s_cached_vbus_mv = 0;
 
 int bsp_battery_get_percent(void) {
     if (!axp_dev_handle) return 100;
     
     int64_t now = esp_timer_get_time();
-    // Cache for 3 seconds to avoid blocking the LVGL UI thread with frequent I2C traffic
-    if (s_cached_battery_percent >= 0 && (now - s_last_battery_read_us < 3000000)) {
+    if (s_cached_battery_percent >= 0 && (now - s_last_battery_read_us < 3000000LL)) {
         return s_cached_battery_percent;
     }
 
@@ -122,7 +237,6 @@ int bsp_battery_get_percent(void) {
     esp_err_t ret = i2c_master_transmit_receive(axp_dev_handle, &reg, 1, &percent, 1, 20);
     if (ret == ESP_OK) {
         s_last_battery_read_us = now;
-        // On AXP2101, reg 0xA4 provides percentage directly (0-100), or masked with 0x7F
         int val = (percent <= 100) ? (int)percent : (int)(percent & 0x7F);
         if (val >= 0 && val <= 100) {
             s_cached_battery_percent = val;
@@ -133,11 +247,9 @@ int bsp_battery_get_percent(void) {
 }
 
 int bsp_battery_get_voltage_mv(void) {
-    if (!axp_dev_handle) return 3800;
-    static int s_cached_voltage_mv = 3800;
-    static int64_t s_last_voltage_read_us = 0;
+    if (!axp_dev_handle) return 3850;
     int64_t now = esp_timer_get_time();
-    if (now - s_last_voltage_read_us < 3000000) {
+    if (now - s_last_voltage_read_us < 3000000LL) {
         return s_cached_voltage_mv;
     }
     uint8_t reg = 0x34; // Battery voltage register (0x34 high byte, 0x35 low byte)
@@ -145,9 +257,8 @@ int bsp_battery_get_voltage_mv(void) {
     esp_err_t ret = i2c_master_transmit_receive(axp_dev_handle, &reg, 1, buf, 2, 20);
     if (ret == ESP_OK) {
         s_last_voltage_read_us = now;
-        // 14-bit ADC, 1mV/LSB
         int v_mv = ((buf[0] & 0x3F) << 8) | buf[1];
-        if (v_mv >= 3000 && v_mv <= 4400) {
+        if (v_mv >= 2500 && v_mv <= 4450) {
             s_cached_voltage_mv = v_mv;
             return v_mv;
         }
@@ -155,24 +266,46 @@ int bsp_battery_get_voltage_mv(void) {
     return s_cached_voltage_mv;
 }
 
+int bsp_battery_get_vbus_mv(void) {
+    if (!axp_dev_handle) return 0;
+    int64_t now = esp_timer_get_time();
+    if (now - s_last_vbus_read_us < 3000000LL) {
+        return s_cached_vbus_mv;
+    }
+    uint8_t reg = 0x38; // VBUS voltage register (0x38 high, 0x39 low)
+    uint8_t buf[2] = {0};
+    if (i2c_master_transmit_receive(axp_dev_handle, &reg, 1, buf, 2, 20) == ESP_OK) {
+        s_last_vbus_read_us = now;
+        int v_mv = ((buf[0] & 0x3F) << 8) | buf[1];
+        s_cached_vbus_mv = (v_mv >= 3500 && v_mv <= 6500) ? v_mv : 0;
+    }
+    return s_cached_vbus_mv;
+}
+
 bool bsp_battery_is_charging(void) {
     if (!axp_dev_handle) return false;
     
     int64_t now = esp_timer_get_time();
-    if (now - s_last_charging_read_us < 3000000) {
+    if (now - s_last_charging_read_us < 3000000LL) {
         return s_cached_battery_charging;
     }
 
-    uint8_t reg = 0x01; // Power status 2 (AXP2101)
-    uint8_t status2 = 0;
-    esp_err_t ret = i2c_master_transmit_receive(axp_dev_handle, &reg, 1, &status2, 1, 20);
+    uint8_t reg = 0x00;
+    uint8_t st[2] = {0};
+    esp_err_t ret = i2c_master_transmit_receive(axp_dev_handle, &reg, 1, st, 2, 20);
     if (ret == ESP_OK) {
         s_last_charging_read_us = now;
+        s_cached_vbus_present = (st[0] & (1 << 5)) != 0;
         // AXP2101 Reg 0x01 Bits [6:5]: 01 = Charging
-        s_cached_battery_charging = (((status2 >> 5) & 0x03) == 0x01);
+        s_cached_battery_charging = (((st[1] >> 5) & 0x03) == 0x01);
         return s_cached_battery_charging;
     }
     return s_cached_battery_charging;
+}
+
+bool bsp_battery_is_vbus_present(void) {
+    (void)bsp_battery_is_charging(); // Refreshes st[0] & st[1] cache
+    return s_cached_vbus_present;
 }
 
 esp_err_t bsp_pmu_set_amoled_power(bool enable) {
@@ -201,9 +334,6 @@ esp_err_t bsp_extra_init(void)
 {
     esp_err_t ret;
 
-    // Ensure default event loop exists for cross-component events
-    //(void)esp_event_loop_create_default();
-
     bus_handle = bsp_i2c_get_handle();
     
     ret = bsp_rtc_init();
@@ -221,13 +351,11 @@ esp_err_t bsp_extra_init(void)
     ret = qmi8658_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "QMI8658 init failed");
-        // Not returning error to let it boot even if IMU fails
     }
 
     ret = wifi_manager_pre_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "wifi_manager_pre_init failed");
-        // Don't return error here, to let the system boot even if NVS fails
     }
 
     ret = bsp_battery_init();

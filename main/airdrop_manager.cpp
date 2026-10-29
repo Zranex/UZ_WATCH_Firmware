@@ -1,5 +1,6 @@
 #include "airdrop_manager.hpp"
 #include "bsp/esp32_s3_touch_amoled_2_06.h"
+#include "display_manager.h"
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include <sys/stat.h>
@@ -90,6 +91,7 @@ static void sanitize_filename(char *dst, const char *src, size_t max_len) {
 
 // 1. List files (GET /list)
 static esp_err_t list_get_handler(httpd_req_t *req) {
+    display_manager_reset_timer();
     const char *base = AIRDROP_BASE_PATH;
     DIR *dir = opendir(base);
     if (!dir) {
@@ -132,6 +134,7 @@ static esp_err_t list_get_handler(httpd_req_t *req) {
 
 // 2. Upload file (POST /upload?filename=abc.jpg)
 static esp_err_t upload_post_handler(httpd_req_t *req) {
+    display_manager_reset_timer();
     char raw_filename[256] = {0};
     size_t buf_len = httpd_req_get_url_query_len(req) + 1;
     if (buf_len > 1) {
@@ -217,6 +220,7 @@ static esp_err_t upload_post_handler(httpd_req_t *req) {
         timeout_retries = 0;
         fwrite(chunk, 1, received, fd);
         remaining -= received;
+        display_manager_reset_timer();
         
         vTaskDelay(pdMS_TO_TICKS(1));
     }
@@ -433,6 +437,7 @@ static const char* get_mime_type(const char *filename) {
 
 // 3. Download file (GET /download?filename=abc.txt)
 static esp_err_t download_get_handler(httpd_req_t *req) {
+    display_manager_reset_timer();
     char raw_filename[256] = {0};
     size_t buf_len = httpd_req_get_url_query_len(req) + 1;
     if (buf_len > 1) {
@@ -475,7 +480,9 @@ static esp_err_t download_get_handler(httpd_req_t *req) {
     }
 
     size_t read_bytes;
+    int chunk_cnt = 0;
     while ((read_bytes = fread(chunk, 1, 4096, fd)) > 0) {
+        if ((++chunk_cnt & 0x07) == 0) display_manager_reset_timer();
         if (httpd_resp_send_chunk(req, chunk, read_bytes) != ESP_OK) {
             fclose(fd);
             free(chunk);
@@ -490,6 +497,7 @@ static esp_err_t download_get_handler(httpd_req_t *req) {
 
 // 4. View / Stream file with HTTP 206 Range support (GET /view?filename=abc.mp4)
 static esp_err_t view_get_handler(httpd_req_t *req) {
+    display_manager_reset_timer();
     char raw_filename[256] = {0};
     size_t buf_len = httpd_req_get_url_query_len(req) + 1;
     if (buf_len > 1) {
@@ -593,7 +601,9 @@ static esp_err_t view_get_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
+    int chunk_cnt = 0;
     while (remaining > 0) {
+        if ((++chunk_cnt & 0x07) == 0) display_manager_reset_timer();
         size_t to_read = (size_t)MIN(remaining, (int64_t)chunk_size);
         size_t read_bytes = fread(chunk, 1, to_read, fd);
         if (read_bytes <= 0) break;
@@ -609,6 +619,7 @@ static esp_err_t view_get_handler(httpd_req_t *req) {
 
 // 5. Index page (GET /)
 static esp_err_t index_get_handler(httpd_req_t *req) {
+    display_manager_reset_timer();
     httpd_resp_set_type(req, "text/html");
     httpd_resp_sendstr(req, s_airdrop_index_html);
     return ESP_OK;

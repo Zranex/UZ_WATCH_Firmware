@@ -44,12 +44,14 @@ private:
     lv_obj_t* _btn_saver;
     lv_obj_t* _btn_wrist_toggle;
     lv_obj_t* _lbl_wrist_toggle;
+    lv_obj_t* _btn_ble_toggle;
+    lv_obj_t* _lbl_ble_toggle;
     lv_obj_t* _btn_sleep_now;
 
     lv_timer_t* _poll_timer;
 
-    static void on_back_clicked(lv_event_t* e);
     static void on_profile_clicked(lv_event_t* e);
     static void on_wrist_toggle_clicked(lv_event_t* e);
+    static void on_ble_toggle_clicked(lv_event_t* e);
     static void on_sleep_now_clicked(lv_event_t* e);
 };

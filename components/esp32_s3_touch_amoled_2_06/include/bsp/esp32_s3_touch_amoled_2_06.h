@@ -156,6 +156,11 @@ esp_codec_dev_handle_t bsp_audio_codec_speaker_init(void);
  */
 esp_codec_dev_handle_t bsp_audio_codec_microphone_init(void);
 
+/**
+ * @brief Disable idle I2S TX/RX channels to eliminate MCLK/DMA power drain in standby
+ */
+void bsp_audio_standby(void);
+
 /**************************************************************************************************
  *
  * SPIFFS

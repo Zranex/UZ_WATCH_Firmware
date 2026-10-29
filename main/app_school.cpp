@@ -4,6 +4,7 @@
 #include <string.h>
 #include <math.h>
 #include "bsp/esp-bsp.h"
+#include "bsp_board_extra.h"
 #include "esp_timer.h"
 #include "ui_notification_banner.hpp"
 
@@ -12,6 +13,7 @@ extern "C" {
 #include "display_manager.h"
 #include "esp_codec_dev.h"
 void bsp_audio_power_amp_enable(bool enable);
+void bsp_audio_standby(void);
 }
 
 extern esp_codec_dev_handle_t spk_codec_dev;
@@ -49,6 +51,7 @@ static const SchoolPeriod s_periods[] = {
 static const int NUM_PERIODS = sizeof(s_periods) / sizeof(s_periods[0]);
 
 static void play_discreet_bell_chime_task(void* pv) {
+    bsp_vibrate_pulse(180);
     if (spk_codec_dev) {
         esp_codec_dev_sample_info_t fs = {
             .bits_per_sample = 16,
@@ -71,6 +74,7 @@ static void play_discreet_bell_chime_task(void* pv) {
             esp_codec_dev_close(spk_codec_dev);
         }
         bsp_audio_power_amp_enable(false);
+        bsp_audio_standby();
     }
     vTaskDelete(NULL);
 }
@@ -89,12 +93,18 @@ bool AppSchool::is_lesson_in_progress() {
 }
 
 static esp_timer_handle_t s_school_esp_timer = NULL;
+static int s_last_bell_key = -1;
+
 static void school_timer_esp_cb(void* arg) {
     AppSchool::check_bell_tick();
 }
 
 void AppSchool::start_background_timer() {
     if (s_school_esp_timer != NULL) return;
+    struct tm boot_tm;
+    if (rtc_get_time(&boot_tm) == ESP_OK) {
+        s_last_bell_key = boot_tm.tm_yday * 1440 + (boot_tm.tm_hour * 60 + boot_tm.tm_min);
+    }
     esp_timer_create_args_t timer_args = {
         .callback = school_timer_esp_cb,
         .arg = NULL,
@@ -103,8 +113,8 @@ void AppSchool::start_background_timer() {
         .skip_unhandled_events = true
     };
     if (esp_timer_create(&timer_args, &s_school_esp_timer) == ESP_OK) {
-        esp_timer_start_periodic(s_school_esp_timer, 1000000); // Ticks every 1 sec independent of LVGL
-        ESP_LOGI(TAG, "Hardware RTC-backed school bell timer running (1Hz)");
+        esp_timer_start_periodic(s_school_esp_timer, 10000000ULL); // Every 10s (90% fewer wakeups, zero missed bells!)
+        ESP_LOGI(TAG, "School bell background engine started (10s low-power tick)");
     }
 }
 
@@ -115,10 +125,10 @@ void AppSchool::check_bell_tick() {
     // Only active Monday - Friday (1 = Mon, 5 = Fri)
     if (timeinfo.tm_wday < 1 || timeinfo.tm_wday > 5) return;
 
-    // Only trigger at exact second 0
-    if (timeinfo.tm_sec != 0) return;
-
     int current_min = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+    int bell_key = timeinfo.tm_yday * 1440 + current_min;
+    if (bell_key == s_last_bell_key) return;
+    s_last_bell_key = bell_key;
 
     for (int i = 0; i < NUM_PERIODS; i++) {
         if (current_min == s_periods[i].start_min) {
@@ -275,6 +285,7 @@ bool AppSchool::run() {
     lv_obj_set_style_border_width(_list_schedule, 1, 0);
     lv_obj_set_style_radius(_list_schedule, 14, 0);
     lv_obj_set_style_pad_all(_list_schedule, 8, 0);
+    lv_obj_set_style_pad_row(_list_schedule, 6, 0);
     lv_obj_set_style_shadow_width(_list_schedule, 0, 0);
     lv_obj_set_style_shadow_spread(_list_schedule, 0, 0);
     lv_obj_set_style_shadow_opa(_list_schedule, LV_OPA_TRANSP, 0);

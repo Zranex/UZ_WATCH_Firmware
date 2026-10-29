@@ -18,6 +18,8 @@ public:
     void update_ui();
 
     static void check_bell_tick();
+    static bool is_lesson_in_progress();
+    static void start_background_timer();
     static AppSchool* get_instance() { return _instance; }
 
 private:

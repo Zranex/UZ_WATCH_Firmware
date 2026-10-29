@@ -15,6 +15,12 @@ static volatile bool s_acc_valid = false;
 // Algorithm parameters
 static volatile uint32_t s_pedometer_delay_ms = 50; // 20 Hz active, 10 Hz sleep, 4 Hz still
 static volatile bool s_is_low_power = false;
+static pedometer_acc_cb_t s_acc_cb = NULL;
+
+void pedometer_register_acc_callback(pedometer_acc_cb_t cb)
+{
+    s_acc_cb = cb;
+}
 #define PEAK_THRESHOLD 1.2f             // 1.2 G to trigger a step (Earth gravity is 1.0 G)
 #define COOLDOWN_MS 300                 // Minimum time between steps
 
@@ -40,6 +46,9 @@ static void pedometer_task(void *pvParameter)
         if (qmi8658_read_acc(&acc) == ESP_OK) {
             s_latest_acc = acc;
             s_acc_valid = true;
+            if (s_acc_cb) {
+                s_acc_cb(&acc);
+            }
             // Calculate vector magnitude
             float mag = sqrtf((acc.x * acc.x) + (acc.y * acc.y) + (acc.z * acc.z));
             

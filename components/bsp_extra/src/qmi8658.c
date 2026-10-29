@@ -54,7 +54,9 @@ esp_err_t qmi8658_init(void) {
 
     // Configure QMI8658 (Ultra-Low Power Mode: Accelerometer only, Gyroscope disabled)
     qmi_write_reg(QMI8658_CTRL1, 0x40); // Address Auto-Increment
-    qmi_write_reg(QMI8658_CTRL2, 0x01); // Accel Enable, 2g, 125Hz
+    // CTRL2: Bits[6:4]=Range (000 = 2g), Bits[3:0]=ODR (0x07 = 62.5Hz). 
+    // Fix: Previous 0x01 was 4000Hz (4kHz overclock), drawing massive continuous power!
+    qmi_write_reg(QMI8658_CTRL2, 0x07); // Accel Enable: 2g, 62.5Hz (ultra low-power ~15uA)
     qmi_write_reg(QMI8658_CTRL3, 0x00); // Gyroscope Disabled (Saves ~3.5mA continuous battery)
     qmi_write_reg(QMI8658_CTRL7, 0x01); // Enable Accelerometer ONLY (Bit 0=1, Bit 1=0)
     

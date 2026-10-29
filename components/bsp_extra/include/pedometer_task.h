@@ -37,6 +37,9 @@ esp_err_t pedometer_get_latest_acc(qmi8658_acc_t *acc);
  */
 void pedometer_set_low_power(bool enable);
 
+typedef void (*pedometer_acc_cb_t)(const qmi8658_acc_t *acc);
+void pedometer_register_acc_callback(pedometer_acc_cb_t cb);
+
 #ifdef __cplusplus
 }
 #endif

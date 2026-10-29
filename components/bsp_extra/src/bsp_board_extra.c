@@ -95,7 +95,11 @@ esp_err_t bsp_battery_init(void) {
     uint8_t reg_0x62_data[2] = {0x62, 0x08};
     (void)i2c_master_transmit(axp_dev_handle, reg_0x62_data, 2, I2C_MASTER_TIMEOUT_MS);
 
-    ESP_LOGI(TAG, "AXP2101 PMIC configured (ADC active, TS disabled, 400mA charging)");
+    // 3. Register 0x24: Set V_OFF cut-off to 3.4V (protects battery health)
+    uint8_t reg_0x24_data[2] = {0x24, 0x04};
+    (void)i2c_master_transmit(axp_dev_handle, reg_0x24_data, 2, I2C_MASTER_TIMEOUT_MS);
+
+    ESP_LOGI(TAG, "AXP2101 PMIC configured (ADC active, TS disabled, 400mA charging, 3.4V cutoff)");
     return ESP_OK;
 }
 
@@ -126,6 +130,29 @@ int bsp_battery_get_percent(void) {
         }
     }
     return (s_cached_battery_percent >= 0) ? s_cached_battery_percent : 100;
+}
+
+int bsp_battery_get_voltage_mv(void) {
+    if (!axp_dev_handle) return 3800;
+    static int s_cached_voltage_mv = 3800;
+    static int64_t s_last_voltage_read_us = 0;
+    int64_t now = esp_timer_get_time();
+    if (now - s_last_voltage_read_us < 3000000) {
+        return s_cached_voltage_mv;
+    }
+    uint8_t reg = 0x34; // Battery voltage register (0x34 high byte, 0x35 low byte)
+    uint8_t buf[2] = {0};
+    esp_err_t ret = i2c_master_transmit_receive(axp_dev_handle, &reg, 1, buf, 2, 20);
+    if (ret == ESP_OK) {
+        s_last_voltage_read_us = now;
+        // 14-bit ADC, 1mV/LSB
+        int v_mv = ((buf[0] & 0x3F) << 8) | buf[1];
+        if (v_mv >= 3000 && v_mv <= 4400) {
+            s_cached_voltage_mv = v_mv;
+            return v_mv;
+        }
+    }
+    return s_cached_voltage_mv;
 }
 
 bool bsp_battery_is_charging(void) {

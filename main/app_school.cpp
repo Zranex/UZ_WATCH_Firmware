@@ -4,6 +4,7 @@
 #include <string.h>
 #include <math.h>
 #include "bsp/esp-bsp.h"
+#include "esp_timer.h"
 #include "ui_notification_banner.hpp"
 
 extern "C" {
@@ -74,6 +75,39 @@ static void play_discreet_bell_chime_task(void* pv) {
     vTaskDelete(NULL);
 }
 
+bool AppSchool::is_lesson_in_progress() {
+    struct tm timeinfo;
+    if (rtc_get_time(&timeinfo) != ESP_OK) return false;
+    if (timeinfo.tm_wday < 1 || timeinfo.tm_wday > 5) return false;
+    int current_min = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+    for (int i = 0; i < NUM_PERIODS; i++) {
+        if (!s_periods[i].is_break && current_min >= s_periods[i].start_min && current_min < s_periods[i].end_min) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static esp_timer_handle_t s_school_esp_timer = NULL;
+static void school_timer_esp_cb(void* arg) {
+    AppSchool::check_bell_tick();
+}
+
+void AppSchool::start_background_timer() {
+    if (s_school_esp_timer != NULL) return;
+    esp_timer_create_args_t timer_args = {
+        .callback = school_timer_esp_cb,
+        .arg = NULL,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "school_bell_bg",
+        .skip_unhandled_events = true
+    };
+    if (esp_timer_create(&timer_args, &s_school_esp_timer) == ESP_OK) {
+        esp_timer_start_periodic(s_school_esp_timer, 1000000); // Ticks every 1 sec independent of LVGL
+        ESP_LOGI(TAG, "Hardware RTC-backed school bell timer running (1Hz)");
+    }
+}
+
 void AppSchool::check_bell_tick() {
     struct tm timeinfo;
     if (rtc_get_time(&timeinfo) != ESP_OK) return;
@@ -95,7 +129,11 @@ void AppSchool::check_bell_tick() {
             } else {
                 snprintf(banner, sizeof(banner), "Ders Zili Caldi: %s", s_periods[i].name);
             }
-            AppNotifications::show("Okul Asistani", banner);
+            display_manager_turn_on();
+            if (bsp_display_lock(1000)) {
+                AppNotifications::show("Okul Asistani", banner);
+                bsp_display_unlock();
+            }
             xTaskCreate(play_discreet_bell_chime_task, "bell_sound", 3072, NULL, 4, NULL);
             return;
         }
@@ -103,7 +141,11 @@ void AppSchool::check_bell_tick() {
 
     // Check school dismissal (15:05)
     if (current_min == (15*60 + 5)) {
-        AppNotifications::show("Okul Asistani", "Okul Bitti! Iyi Tatiller!");
+        display_manager_turn_on();
+        if (bsp_display_lock(1000)) {
+            AppNotifications::show("Okul Asistani", "Okul Bitti! Iyi Tatiller!");
+            bsp_display_unlock();
+        }
         xTaskCreate(play_discreet_bell_chime_task, "bell_sound", 3072, NULL, 4, NULL);
     }
 }

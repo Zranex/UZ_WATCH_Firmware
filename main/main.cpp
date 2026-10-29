@@ -39,6 +39,7 @@ extern "C" {
 #include "app_transit.hpp"
 #include "app_airdrop.hpp"
 #include "app_school.hpp"
+#include "app_power.hpp"
 
 extern "C" {
 #include "ble_manager.h"
@@ -62,64 +63,67 @@ static Phone* g_phone = nullptr;
         .task_stack = 20 * 1024,       \
         .task_affinity = 1,      \
         .task_max_sleep_ms = 500, \
-        .timer_period_ms = 5,     \
+        .timer_period_ms = 16,     \
     }
 
-static void imu_task(void *pvParameter) {
+static bool s_wrist_wake_enabled = true;
+
+extern "C" void system_set_wrist_wake_enabled(bool enabled) {
+    s_wrist_wake_enabled = enabled;
+}
+
+extern "C" bool system_is_wrist_wake_enabled(void) {
+    return s_wrist_wake_enabled;
+}
+
+static void on_pedometer_sample(const qmi8658_acc_t *acc) {
     static bool s_was_away = false;
     static int s_away_count = 0;
     static int s_view_count = 0;
 
-    while(1) {
-        bool is_display_on = display_manager_is_on();
-        if (is_display_on) {
-            // Screen is already ON: skip IMU math and sleep to save CPU power
-            vTaskDelay(pdMS_TO_TICKS(500));
-            s_was_away = false;
-            s_away_count = 0;
-            s_view_count = 0;
-            continue;
+    if (!s_wrist_wake_enabled) {
+        return;
+    }
+
+    if (display_manager_is_on()) {
+        s_was_away = false;
+        s_away_count = 0;
+        s_view_count = 0;
+        return;
+    }
+
+    float bx, by, bz;
+    AppCalibration::get_calibrated_baseline(&bx, &by, &bz);
+    
+    float dx = acc->x - bx;
+    float dy = acc->y - by;
+    float dz = acc->z - bz;
+    float dist_sq = dx*dx + dy*dy + dz*dz;
+    
+    // Non-viewing posture: Arm is down (acc->y < -0.4f) or tilted away (acc->z < 0.55f or dist_sq > 0.40f)
+    if (dist_sq > 0.40f || acc->y < -0.4f || acc->z < 0.55f) {
+        s_away_count++;
+        if (s_away_count >= 2) { // Arm has been away for >= 400ms
+            s_was_away = true;
+            s_away_count = 2;
         }
-        
-        qmi8658_acc_t acc;
-        if (pedometer_get_latest_acc(&acc) == ESP_OK) {
-            float bx, by, bz;
-            AppCalibration::get_calibrated_baseline(&bx, &by, &bz);
-            
-            float dx = acc.x - bx;
-            float dy = acc.y - by;
-            float dz = acc.z - bz;
-            float dist_sq = dx*dx + dy*dy + dz*dz;
-            
-            // Non-viewing posture: Arm is down (acc.y < -0.4f) or tilted away (acc.z < 0.55f or dist_sq > 0.40f)
-            if (dist_sq > 0.40f || acc.y < -0.4f || acc.z < 0.55f) {
-                s_away_count++;
-                if (s_away_count >= 2) { // Arm has been away for >= 400ms
-                    s_was_away = true;
-                    s_away_count = 2;
-                }
+        s_view_count = 0;
+    } 
+    // Viewing posture: In calibrated viewing radius
+    else if (dist_sq < 0.18f && acc->z > 0.65f) {
+        s_away_count = 0;
+        // Only wake up if the arm was previously away (true gesture raise, not resting on school desk)
+        if (s_was_away) {
+            s_view_count++;
+            if (s_view_count >= 2) { // Stable for ~400ms
+                s_was_away = false;
                 s_view_count = 0;
-            } 
-            // Viewing posture: In calibrated viewing radius
-            else if (dist_sq < 0.18f && acc.z > 0.65f) {
-                s_away_count = 0;
-                // Only wake up if the arm was previously away (true gesture raise, not resting on school desk)
-                if (s_was_away) {
-                    s_view_count++;
-                    if (s_view_count >= 2) { // Stable for ~400ms
-                        s_was_away = false;
-                        s_view_count = 0;
-                        display_manager_turn_on();
-                        ESP_UTILS_LOGI("Dynamic wrist raise confirmed! Display ON.");
-                    }
-                }
-            } else {
-                s_view_count = 0;
+                display_manager_turn_on();
+                ESP_UTILS_LOGI("Dynamic wrist raise confirmed! Display ON.");
             }
         }
-        
-        // 200ms interval for responsive dynamic wrist-wake
-        vTaskDelay(pdMS_TO_TICKS(250));
+    } else {
+        s_view_count = 0;
     }
 }
 
@@ -298,6 +302,9 @@ extern "C" void app_main(void)
         AppSchool *schoolApp = new (std::nothrow) AppSchool();
         if(schoolApp) phone->installApp(schoolApp);
 
+        AppPower *powerApp = new (std::nothrow) AppPower();
+        if(powerApp) phone->installApp(powerApp);
+
         /* Notifications UI Init */
         AppNotifications::init();
 
@@ -328,7 +335,6 @@ extern "C" void app_main(void)
             time(&now);
             localtime_r(&now, &timeinfo);
             phone->getDisplay().getStatusBar()->setClock(timeinfo.tm_hour, timeinfo.tm_min);
-            AppSchool::check_bell_tick();
             
             // Wi-Fi durumu (her saniye kontrol edilir - aninda tepki)
             StatusBar::WifiState ws = StatusBar::WifiState::DISCONNECTED;
@@ -349,8 +355,11 @@ extern "C" void app_main(void)
         }, 1000, phone);
     }
 
-    // Start IMU Background Task
-    xTaskCreate(imu_task, "imu_task", 4096, NULL, 5, NULL);
+    // Unified Pedometer & Wrist-Gesture callback (Eliminates separate imu_task & saves 4KB RAM stack)
+    pedometer_register_acc_callback(on_pedometer_sample);
+
+    // Hardware RTC-backed School Bell Background Engine (Works 100% reliably even when screen sleeps)
+    AppSchool::start_background_timer();
 
     ESP_UTILS_LOGI("UZ WATCH v3 - Sistem Hazir!");
     ble_manager_init();

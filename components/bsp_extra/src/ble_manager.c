@@ -227,7 +227,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
             struct ble_gap_upd_params conn_params = {
                 .itvl_min = 40,  // 40 * 1.25ms = 50ms
                 .itvl_max = 80,  // 80 * 1.25ms = 100ms
-                .latency = 1,    // Slave can skip 1 connection event when idle
+                .latency = 4,    // Slave skips up to 4 connection events when idle (saves ~60% radio power)
                 .supervision_timeout = 500, // 500 * 10ms = 5000ms (5s)
                 .min_ce_len = 0,
                 .max_ce_len = 0,

@@ -27,6 +27,8 @@ AppTransit::AppTransit()
       _bg_obj(nullptr), _lbl_title(nullptr), _lbl_status(nullptr),
       _btn_refresh(nullptr), _lbl_refresh(nullptr), _btn_card(nullptr),
       _modal_card(nullptr), _saved_brightness(50), _istanbulkart_id("0474001234567890"),
+      _current_card_index(0), _card_obj(nullptr), _lbl_card_title(nullptr),
+      _lbl_card_sub(nullptr), _lbl_card_id(nullptr), _qr_code(nullptr),
       _is_fetching(false)
 {
     _instance = this;
@@ -165,6 +167,45 @@ void AppTransit::on_card_clicked(lv_event_t* e) {
     }
 }
 
+void AppTransit::update_active_card() {
+    if (!_card_obj) return;
+    const char* title = "istanbulkart";
+    const char* sub = "Toplu Tasima Dijital Gecis";
+    const char* id_lbl = "0474 **** **** 9012";
+    const char* qr_data = _istanbulkart_id.empty() ? "0474001234567890" : _istanbulkart_id.c_str();
+    lv_color_t border_col = lv_color_hex(0xC62828);
+    lv_color_t title_col = lv_color_hex(0xFF5252);
+
+    if (_current_card_index == 1) {
+        title = "Okul & Yemekhane";
+        sub = "Ogrenci Kimlik & Turnike";
+        id_lbl = "No: 2026 - UZ WATCH";
+        qr_data = "OGRENCI-2026-UZ-WATCH";
+        border_col = lv_color_hex(0x2563EB);
+        title_col = lv_color_hex(0x60A5FA);
+    } else if (_current_card_index == 2) {
+        title = "Acil Durum (ICE)";
+        sub = "Veli Iletisim & Saglik";
+        id_lbl = "Acil Tel: 0555 *** 45 67";
+        qr_data = "TEL:05551234567;KAN:A+;UZ-WATCH";
+        border_col = lv_color_hex(0xD97706);
+        title_col = lv_color_hex(0xFBBF24);
+    }
+
+    lv_obj_set_style_border_color(_card_obj, border_col, 0);
+    if (_lbl_card_title) {
+        lv_label_set_text(_lbl_card_title, title);
+        lv_obj_set_style_text_color(_lbl_card_title, title_col, 0);
+    }
+    if (_lbl_card_sub) lv_label_set_text(_lbl_card_sub, sub);
+    if (_lbl_card_id) lv_label_set_text(_lbl_card_id, id_lbl);
+#if LV_USE_QRCODE
+    if (_qr_code) {
+        lv_qrcode_update(_qr_code, qr_data, strlen(qr_data));
+    }
+#endif
+}
+
 void AppTransit::show_card_modal() {
     if (_modal_card != nullptr) return;
 
@@ -179,35 +220,35 @@ void AppTransit::show_card_modal() {
     lv_obj_set_style_radius(_modal_card, 0, 0);
     lv_obj_clear_flag(_modal_card, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Istanbulkart Visual Container
-    lv_obj_t* card = lv_obj_create(_modal_card);
-    lv_obj_set_size(card, 380, 430);
-    lv_obj_align(card, LV_ALIGN_CENTER, 0, 10);
-    lv_obj_set_style_bg_color(card, lv_color_hex(0x162035), 0);
-    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(card, lv_color_hex(0xC62828), 0); // Istanbulkart Red
-    lv_obj_set_style_border_width(card, 2, 0);
-    lv_obj_set_style_radius(card, 20, 0);
-    lv_obj_set_style_shadow_width(card, 0, 0);
-    lv_obj_set_style_shadow_spread(card, 0, 0);
-    lv_obj_set_style_shadow_opa(card, LV_OPA_TRANSP, 0);
-    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    // Multi-Card Visual Container
+    _card_obj = lv_obj_create(_modal_card);
+    lv_obj_set_size(_card_obj, 380, 430);
+    lv_obj_align(_card_obj, LV_ALIGN_CENTER, 0, 10);
+    lv_obj_set_style_bg_color(_card_obj, lv_color_hex(0x162035), 0);
+    lv_obj_set_style_bg_opa(_card_obj, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(_card_obj, lv_color_hex(0xC62828), 0); // Istanbulkart Red
+    lv_obj_set_style_border_width(_card_obj, 2, 0);
+    lv_obj_set_style_radius(_card_obj, 20, 0);
+    lv_obj_set_style_shadow_width(_card_obj, 0, 0);
+    lv_obj_set_style_shadow_spread(_card_obj, 0, 0);
+    lv_obj_set_style_shadow_opa(_card_obj, LV_OPA_TRANSP, 0);
+    lv_obj_clear_flag(_card_obj, LV_OBJ_FLAG_SCROLLABLE);
 
     // Header Logo & Subtitle
-    lv_obj_t* lbl_card_title = lv_label_create(card);
-    lv_obj_set_style_text_font(lbl_card_title, &lv_font_montserrat_22, 0);
-    lv_obj_set_style_text_color(lbl_card_title, lv_color_hex(0xFF5252), 0);
-    lv_label_set_text(lbl_card_title, "istanbulkart");
-    lv_obj_align(lbl_card_title, LV_ALIGN_TOP_LEFT, 15, 12);
+    _lbl_card_title = lv_label_create(_card_obj);
+    lv_obj_set_style_text_font(_lbl_card_title, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(_lbl_card_title, lv_color_hex(0xFF5252), 0);
+    lv_label_set_text(_lbl_card_title, "istanbulkart");
+    lv_obj_align(_lbl_card_title, LV_ALIGN_TOP_LEFT, 15, 12);
 
-    lv_obj_t* lbl_sub = lv_label_create(card);
-    lv_obj_set_style_text_font(lbl_sub, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_sub, lv_color_hex(0x8A9BB8), 0);
-    lv_label_set_text(lbl_sub, "Dijital Gecis QR Kodu");
-    lv_obj_align(lbl_sub, LV_ALIGN_TOP_LEFT, 15, 38);
+    _lbl_card_sub = lv_label_create(_card_obj);
+    lv_obj_set_style_text_font(_lbl_card_sub, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(_lbl_card_sub, lv_color_hex(0x8A9BB8), 0);
+    lv_label_set_text(_lbl_card_sub, "Dijital Gecis QR Kodu");
+    lv_obj_align(_lbl_card_sub, LV_ALIGN_TOP_LEFT, 15, 38);
 
     // White High-Contrast QR Frame
-    lv_obj_t* qr_frame = lv_obj_create(card);
+    lv_obj_t* qr_frame = lv_obj_create(_card_obj);
     lv_obj_set_size(qr_frame, 220, 220);
     lv_obj_align(qr_frame, LV_ALIGN_CENTER, 0, -10);
     lv_obj_set_style_bg_color(qr_frame, lv_color_hex(0xFFFFFF), 0);
@@ -215,38 +256,66 @@ void AppTransit::show_card_modal() {
     lv_obj_set_style_border_width(qr_frame, 0, 0);
     lv_obj_set_style_radius(qr_frame, 14, 0);
     lv_obj_set_style_shadow_width(qr_frame, 0, 0);
-    lv_obj_set_style_shadow_spread(qr_frame, 0, 0);
-    lv_obj_set_style_shadow_opa(qr_frame, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(qr_frame, LV_OBJ_FLAG_SCROLLABLE);
 
 #if LV_USE_QRCODE
-    lv_obj_t* qr = lv_qrcode_create(qr_frame);
-    lv_qrcode_set_size(qr, 196);
-    lv_qrcode_set_dark_color(qr, lv_color_black());
-    lv_qrcode_set_light_color(qr, lv_color_white());
+    _qr_code = lv_qrcode_create(qr_frame);
+    lv_qrcode_set_size(_qr_code, 196);
+    lv_qrcode_set_dark_color(_qr_code, lv_color_black());
+    lv_qrcode_set_light_color(_qr_code, lv_color_white());
     const char* qr_data = _istanbulkart_id.empty() ? "0474001234567890" : _istanbulkart_id.c_str();
-    lv_qrcode_update(qr, qr_data, strlen(qr_data));
-    lv_obj_center(qr);
-#else
-    lv_obj_t* lbl_no_qr = lv_label_create(qr_frame);
-    lv_obj_set_style_text_color(lbl_no_qr, lv_color_black(), 0);
-    lv_label_set_text(lbl_no_qr, "QR");
-    lv_obj_center(lbl_no_qr);
+    lv_qrcode_update(_qr_code, qr_data, strlen(qr_data));
+    lv_obj_center(_qr_code);
 #endif
 
     // Card ID Display
-    lv_obj_t* lbl_id = lv_label_create(card);
-    lv_obj_set_style_text_font(lbl_id, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(lbl_id, lv_color_hex(0xFFFFFF), 0);
-    lv_label_set_text(lbl_id, "0474 **** **** 9012");
-    lv_obj_align(lbl_id, LV_ALIGN_BOTTOM_MID, 0, -45);
+    _lbl_card_id = lv_label_create(_card_obj);
+    lv_obj_set_style_text_font(_lbl_card_id, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(_lbl_card_id, lv_color_hex(0xFFFFFF), 0);
+    lv_label_set_text(_lbl_card_id, "0474 **** **** 9012");
+    lv_obj_align(_lbl_card_id, LV_ALIGN_BOTTOM_MID, 0, -45);
 
-    // Close button
-    lv_obj_t* btn_close = lv_obj_create(card);
+    // Navigation Buttons: Prev [<] and Next [>]
+    lv_obj_t* btn_prev = lv_btn_create(_card_obj);
+    lv_obj_set_size(btn_prev, 60, 36);
+    lv_obj_align(btn_prev, LV_ALIGN_BOTTOM_LEFT, 20, -6);
+    lv_obj_set_style_radius(btn_prev, 18, 0);
+    lv_obj_set_style_bg_color(btn_prev, lv_color_hex(0x1F2937), 0);
+    lv_obj_set_style_shadow_width(btn_prev, 0, 0);
+    lv_obj_add_event_cb(btn_prev, [](lv_event_t* e) {
+        AppTransit* app = (AppTransit*)lv_event_get_user_data(e);
+        if (app) {
+            app->_current_card_index = (app->_current_card_index + 2) % 3;
+            app->update_active_card();
+        }
+    }, LV_EVENT_CLICKED, this);
+    lv_obj_t* lbl_p = lv_label_create(btn_prev);
+    lv_label_set_text(lbl_p, "<");
+    lv_obj_center(lbl_p);
+
+    lv_obj_t* btn_next = lv_btn_create(_card_obj);
+    lv_obj_set_size(btn_next, 60, 36);
+    lv_obj_align(btn_next, LV_ALIGN_BOTTOM_RIGHT, -20, -6);
+    lv_obj_set_style_radius(btn_next, 18, 0);
+    lv_obj_set_style_bg_color(btn_next, lv_color_hex(0x1F2937), 0);
+    lv_obj_set_style_shadow_width(btn_next, 0, 0);
+    lv_obj_add_event_cb(btn_next, [](lv_event_t* e) {
+        AppTransit* app = (AppTransit*)lv_event_get_user_data(e);
+        if (app) {
+            app->_current_card_index = (app->_current_card_index + 1) % 3;
+            app->update_active_card();
+        }
+    }, LV_EVENT_CLICKED, this);
+    lv_obj_t* lbl_n = lv_label_create(btn_next);
+    lv_label_set_text(lbl_n, ">");
+    lv_obj_center(lbl_n);
+
+    // Close button in center
+    lv_obj_t* btn_close = lv_obj_create(_card_obj);
     lv_obj_add_flag(btn_close, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(btn_close, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_all(btn_close, 0, 0);
-    lv_obj_set_size(btn_close, 140, 36);
+    lv_obj_set_size(btn_close, 110, 36);
     lv_obj_align(btn_close, LV_ALIGN_BOTTOM_MID, 0, -6);
     lv_obj_set_style_radius(btn_close, 18, 0);
     lv_obj_set_style_bg_color(btn_close, lv_color_hex(0x28334E), 0);
@@ -254,8 +323,6 @@ void AppTransit::show_card_modal() {
     lv_obj_set_style_border_color(btn_close, lv_color_hex(0x3E4E75), 0);
     lv_obj_set_style_border_width(btn_close, 1, 0);
     lv_obj_set_style_shadow_width(btn_close, 0, 0);
-    lv_obj_set_style_shadow_spread(btn_close, 0, 0);
-    lv_obj_set_style_shadow_opa(btn_close, LV_OPA_TRANSP, 0);
     lv_obj_add_event_cb(btn_close, [](lv_event_t* e) {
         AppTransit* app = (AppTransit*)lv_event_get_user_data(e);
         if (app) app->hide_card_modal();
@@ -266,6 +333,8 @@ void AppTransit::show_card_modal() {
     lv_obj_set_style_text_color(lbl_c, lv_color_hex(0xFFFFFF), 0);
     lv_label_set_text(lbl_c, "Kapat");
     lv_obj_center(lbl_c);
+
+    update_active_card();
 }
 
 void AppTransit::hide_card_modal() {
@@ -273,6 +342,11 @@ void AppTransit::hide_card_modal() {
         bsp_display_brightness_set(_saved_brightness);
         lv_obj_delete_async(_modal_card);
         _modal_card = nullptr;
+        _card_obj = nullptr;
+        _lbl_card_title = nullptr;
+        _lbl_card_sub = nullptr;
+        _lbl_card_id = nullptr;
+        _qr_code = nullptr;
     }
 }
 

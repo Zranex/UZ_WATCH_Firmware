@@ -40,6 +40,13 @@ private:
 
     uint8_t _saved_brightness;
     std::string _istanbulkart_id;
+    int _current_card_index;
+    lv_obj_t* _card_obj;
+    lv_obj_t* _lbl_card_title;
+    lv_obj_t* _lbl_card_sub;
+    lv_obj_t* _lbl_card_id;
+    lv_obj_t* _qr_code;
+    void update_active_card();
 
     struct RouteCardUI {
         const char* badge_name;

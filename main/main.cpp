@@ -38,6 +38,7 @@ extern "C" {
 #include "app_agenda.hpp"
 #include "app_transit.hpp"
 #include "app_airdrop.hpp"
+#include "app_school.hpp"
 
 extern "C" {
 #include "ble_manager.h"
@@ -118,7 +119,7 @@ static void imu_task(void *pvParameter) {
         }
         
         // 200ms interval for responsive dynamic wrist-wake
-        vTaskDelay(pdMS_TO_TICKS(200));
+        vTaskDelay(pdMS_TO_TICKS(250));
     }
 }
 
@@ -294,6 +295,9 @@ extern "C" void app_main(void)
         AppAirDrop *airdropApp = new (std::nothrow) AppAirDrop();
         if(airdropApp) phone->installApp(airdropApp);
 
+        AppSchool *schoolApp = new (std::nothrow) AppSchool();
+        if(schoolApp) phone->installApp(schoolApp);
+
         /* Notifications UI Init */
         AppNotifications::init();
 
@@ -324,6 +328,7 @@ extern "C" void app_main(void)
             time(&now);
             localtime_r(&now, &timeinfo);
             phone->getDisplay().getStatusBar()->setClock(timeinfo.tm_hour, timeinfo.tm_min);
+            AppSchool::check_bell_tick();
             
             // Wi-Fi durumu (her saniye kontrol edilir - aninda tepki)
             StatusBar::WifiState ws = StatusBar::WifiState::DISCONNECTED;

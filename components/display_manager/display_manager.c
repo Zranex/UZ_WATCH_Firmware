@@ -174,7 +174,7 @@ static void display_manager_task(void *arg) {
                 }
                 display_manager_turn_on();
             }
-            vTaskDelay(pdMS_TO_TICKS(40)); // 25 Hz polling: 0.00002% CPU, 100% reliable wake!
+            vTaskDelay(pdMS_TO_TICKS(100)); // 10 Hz polling: ultra-low power standby
         }
     }
 }

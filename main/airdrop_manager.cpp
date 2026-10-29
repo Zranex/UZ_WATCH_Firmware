@@ -719,8 +719,10 @@ esp_err_t AirDropManager::start_server() {
 
 void AirDropManager::stop_server() {
     if (_server_handle) {
-        httpd_stop((httpd_handle_t)_server_handle);
+        httpd_handle_t s = (httpd_handle_t)_server_handle;
         _server_handle = nullptr;
-        ESP_LOGI(TAG, "AirDrop Server stopped.");
+        httpd_stop(s);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        ESP_LOGI(TAG, "AirDrop Server stopped and sockets cleared.");
     }
 }

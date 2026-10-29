@@ -24,6 +24,8 @@ static bool ap_active = false;
 static esp_event_handler_instance_t instance_any_id = NULL;
 static esp_event_handler_instance_t instance_got_ip = NULL;
 static int s_retry_count = 0;
+static TaskHandle_t s_wifi_wdog_task = NULL;
+static TaskHandle_t s_autostop_task = NULL;
 
 static void wifi_print_telemetry(const char* state_name) {
     ESP_LOGI("MEM", "--- WIFI STATE: %s ---", state_name);
@@ -54,13 +56,15 @@ static void time_sync_notification_cb(struct timeval *tv)
 
 static void wifi_auto_stop_task(void* arg) {
     vTaskDelay(pdMS_TO_TICKS(200));
+    s_autostop_task = NULL;
     ESP_LOGW(TAG, "Wi-Fi disconnected/unreachable -> Auto-stopping Wi-Fi radio to preserve battery!");
     wifi_manager_stop();
     vTaskDelete(NULL);
 }
 
 static void trigger_wifi_auto_stop(void) {
-    xTaskCreate(wifi_auto_stop_task, "wifi_autostop", 3072, NULL, 3, NULL);
+    if (s_autostop_task != NULL) return;
+    xTaskCreate(wifi_auto_stop_task, "wifi_autostop", 3072, NULL, 3, &s_autostop_task);
 }
 
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
@@ -137,14 +141,17 @@ static void wifi_connect_watchdog_task(void* pv) {
     for (int i = 0; i < 30; i++) {
         vTaskDelay(pdMS_TO_TICKS(500));
         if (!wifi_active) {
+            s_wifi_wdog_task = NULL;
             vTaskDelete(NULL);
             return;
         }
         if (current_state == WIFI_STATE_GOT_IP) {
+            s_wifi_wdog_task = NULL;
             vTaskDelete(NULL);
             return;
         }
     }
+    s_wifi_wdog_task = NULL;
     if (wifi_active && current_state != WIFI_STATE_GOT_IP && current_state != WIFI_STATE_CONNECTED) {
         ESP_LOGW(TAG, "Wi-Fi watchdog timeout (15s) -> Shutting down Wi-Fi radio to preserve battery!");
         wifi_manager_stop();
@@ -242,7 +249,11 @@ esp_err_t wifi_manager_start(void)
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_MIN_MODEM));
 
     // 3. Launch watchdog to auto-stop Wi-Fi if connection cannot be established within 15 seconds
-    xTaskCreate(wifi_connect_watchdog_task, "wifi_wdog", 3072, NULL, 3, NULL);
+    if (s_wifi_wdog_task != NULL) {
+        vTaskDelete(s_wifi_wdog_task);
+        s_wifi_wdog_task = NULL;
+    }
+    xTaskCreate(wifi_connect_watchdog_task, "wifi_wdog", 3072, NULL, 3, &s_wifi_wdog_task);
 
     ESP_LOGI(TAG, "WiFi hardware started & default AP (%s) configured", DEFAULT_WIFI_SSID);
     return ESP_OK;
@@ -255,6 +266,15 @@ esp_err_t wifi_manager_stop(void)
         return ESP_OK;
     }
     wifi_active = false;
+
+    if (s_wifi_wdog_task != NULL) {
+        vTaskDelete(s_wifi_wdog_task);
+        s_wifi_wdog_task = NULL;
+    }
+    if (s_autostop_task != NULL) {
+        vTaskDelete(s_autostop_task);
+        s_autostop_task = NULL;
+    }
 
     if (esp_sntp_enabled()) {
         esp_sntp_stop();

@@ -1,3 +1,4 @@
+#include "bsp/esp-bsp.h"
 #include "app_transit.hpp"
 #include "esp_lib_utils.h"
 #include "esp_log.h"
@@ -24,7 +25,9 @@ AppTransit* AppTransit::_instance = nullptr;
 AppTransit::AppTransit() 
     : esp_brookesia::systems::phone::App("Ulasim", &icon_transit, true),
       _bg_obj(nullptr), _lbl_title(nullptr), _lbl_status(nullptr),
-      _btn_refresh(nullptr), _lbl_refresh(nullptr), _is_fetching(false)
+      _btn_refresh(nullptr), _lbl_refresh(nullptr), _btn_card(nullptr),
+      _modal_card(nullptr), _saved_brightness(50), _istanbulkart_id("0474001234567890"),
+      _is_fetching(false)
 {
     _instance = this;
 
@@ -154,6 +157,125 @@ void AppTransit::on_refresh_clicked(lv_event_t* e) {
     }
 }
 
+
+void AppTransit::on_card_clicked(lv_event_t* e) {
+    AppTransit* app = (AppTransit*)lv_event_get_user_data(e);
+    if (app) {
+        app->show_card_modal();
+    }
+}
+
+void AppTransit::show_card_modal() {
+    if (_modal_card != nullptr) return;
+
+    _saved_brightness = display_manager_get_brightness();
+    bsp_display_brightness_set(100); // 100% max brightness for optical barcode/QR scanners
+
+    _modal_card = lv_obj_create(_bg_obj);
+    lv_obj_set_size(_modal_card, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(_modal_card, lv_color_hex(0x0A0F1D), 0);
+    lv_obj_set_style_bg_opa(_modal_card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(_modal_card, 0, 0);
+    lv_obj_set_style_radius(_modal_card, 0, 0);
+    lv_obj_clear_flag(_modal_card, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Istanbulkart Visual Container
+    lv_obj_t* card = lv_obj_create(_modal_card);
+    lv_obj_set_size(card, 380, 430);
+    lv_obj_align(card, LV_ALIGN_CENTER, 0, 10);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x162035), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(0xC62828), 0); // Istanbulkart Red
+    lv_obj_set_style_border_width(card, 2, 0);
+    lv_obj_set_style_radius(card, 20, 0);
+    lv_obj_set_style_shadow_width(card, 0, 0);
+    lv_obj_set_style_shadow_spread(card, 0, 0);
+    lv_obj_set_style_shadow_opa(card, LV_OPA_TRANSP, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Header Logo & Subtitle
+    lv_obj_t* lbl_card_title = lv_label_create(card);
+    lv_obj_set_style_text_font(lbl_card_title, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(lbl_card_title, lv_color_hex(0xFF5252), 0);
+    lv_label_set_text(lbl_card_title, "istanbulkart");
+    lv_obj_align(lbl_card_title, LV_ALIGN_TOP_LEFT, 15, 12);
+
+    lv_obj_t* lbl_sub = lv_label_create(card);
+    lv_obj_set_style_text_font(lbl_sub, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_sub, lv_color_hex(0x8A9BB8), 0);
+    lv_label_set_text(lbl_sub, "Dijital Gecis QR Kodu");
+    lv_obj_align(lbl_sub, LV_ALIGN_TOP_LEFT, 15, 38);
+
+    // White High-Contrast QR Frame
+    lv_obj_t* qr_frame = lv_obj_create(card);
+    lv_obj_set_size(qr_frame, 220, 220);
+    lv_obj_align(qr_frame, LV_ALIGN_CENTER, 0, -10);
+    lv_obj_set_style_bg_color(qr_frame, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(qr_frame, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(qr_frame, 0, 0);
+    lv_obj_set_style_radius(qr_frame, 14, 0);
+    lv_obj_set_style_shadow_width(qr_frame, 0, 0);
+    lv_obj_set_style_shadow_spread(qr_frame, 0, 0);
+    lv_obj_set_style_shadow_opa(qr_frame, LV_OPA_TRANSP, 0);
+    lv_obj_clear_flag(qr_frame, LV_OBJ_FLAG_SCROLLABLE);
+
+#if LV_USE_QRCODE
+    lv_obj_t* qr = lv_qrcode_create(qr_frame);
+    lv_qrcode_set_size(qr, 196);
+    lv_qrcode_set_dark_color(qr, lv_color_black());
+    lv_qrcode_set_light_color(qr, lv_color_white());
+    const char* qr_data = _istanbulkart_id.empty() ? "0474001234567890" : _istanbulkart_id.c_str();
+    lv_qrcode_update(qr, qr_data, strlen(qr_data));
+    lv_obj_center(qr);
+#else
+    lv_obj_t* lbl_no_qr = lv_label_create(qr_frame);
+    lv_obj_set_style_text_color(lbl_no_qr, lv_color_black(), 0);
+    lv_label_set_text(lbl_no_qr, "QR");
+    lv_obj_center(lbl_no_qr);
+#endif
+
+    // Card ID Display
+    lv_obj_t* lbl_id = lv_label_create(card);
+    lv_obj_set_style_text_font(lbl_id, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(lbl_id, lv_color_hex(0xFFFFFF), 0);
+    lv_label_set_text(lbl_id, "0474 **** **** 9012");
+    lv_obj_align(lbl_id, LV_ALIGN_BOTTOM_MID, 0, -45);
+
+    // Close button
+    lv_obj_t* btn_close = lv_obj_create(card);
+    lv_obj_add_flag(btn_close, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(btn_close, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(btn_close, 0, 0);
+    lv_obj_set_size(btn_close, 140, 36);
+    lv_obj_align(btn_close, LV_ALIGN_BOTTOM_MID, 0, -6);
+    lv_obj_set_style_radius(btn_close, 18, 0);
+    lv_obj_set_style_bg_color(btn_close, lv_color_hex(0x28334E), 0);
+    lv_obj_set_style_bg_opa(btn_close, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(btn_close, lv_color_hex(0x3E4E75), 0);
+    lv_obj_set_style_border_width(btn_close, 1, 0);
+    lv_obj_set_style_shadow_width(btn_close, 0, 0);
+    lv_obj_set_style_shadow_spread(btn_close, 0, 0);
+    lv_obj_set_style_shadow_opa(btn_close, LV_OPA_TRANSP, 0);
+    lv_obj_add_event_cb(btn_close, [](lv_event_t* e) {
+        AppTransit* app = (AppTransit*)lv_event_get_user_data(e);
+        if (app) app->hide_card_modal();
+    }, LV_EVENT_CLICKED, this);
+
+    lv_obj_t* lbl_c = lv_label_create(btn_close);
+    lv_obj_set_style_text_font(lbl_c, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lbl_c, lv_color_hex(0xFFFFFF), 0);
+    lv_label_set_text(lbl_c, "Kapat");
+    lv_obj_center(lbl_c);
+}
+
+void AppTransit::hide_card_modal() {
+    if (_modal_card != nullptr) {
+        bsp_display_brightness_set(_saved_brightness);
+        lv_obj_delete_async(_modal_card);
+        _modal_card = nullptr;
+    }
+}
+
 void AppTransit::request_refresh() {
     ESP_LOGI(TAG, "Requesting transit live refresh...");
     
@@ -226,6 +348,29 @@ bool AppTransit::run() {
     lv_obj_set_style_text_color(_lbl_status, lv_color_hex(0x9E9E9E), 0);
     lv_label_set_text(_lbl_status, "Tarifeler yukleniyor");
     lv_obj_align(_lbl_status, LV_ALIGN_TOP_LEFT, 68, 40);
+
+    // Top Header: Istanbulkart QR Button
+    _btn_card = lv_obj_create(_bg_obj);
+    lv_obj_add_flag(_btn_card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(_btn_card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(_btn_card, 0, 0);
+    lv_obj_set_size(_btn_card, 44, 44);
+    lv_obj_align(_btn_card, LV_ALIGN_TOP_RIGHT, -68, 15);
+    lv_obj_set_style_radius(_btn_card, 22, 0);
+    lv_obj_set_style_bg_color(_btn_card, lv_color_hex(0x222222), 0);
+    lv_obj_set_style_bg_opa(_btn_card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(_btn_card, lv_color_hex(0xC62828), 0);
+    lv_obj_set_style_border_width(_btn_card, 1, 0);
+    lv_obj_set_style_shadow_width(_btn_card, 0, 0);
+    lv_obj_set_style_shadow_spread(_btn_card, 0, 0);
+    lv_obj_set_style_shadow_opa(_btn_card, LV_OPA_TRANSP, 0);
+    lv_obj_add_event_cb(_btn_card, on_card_clicked, LV_EVENT_CLICKED, this);
+
+    lv_obj_t* lbl_card_icon = lv_label_create(_btn_card);
+    lv_obj_set_style_text_font(lbl_card_icon, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(lbl_card_icon, lv_color_hex(0xFF5252), 0);
+    lv_label_set_text(lbl_card_icon, LV_SYMBOL_IMAGE);
+    lv_obj_center(lbl_card_icon);
 
     // Top Header: Refresh Button
     _btn_refresh = lv_btn_create(_bg_obj);
@@ -331,6 +476,8 @@ void AppTransit::force_close() {
 
 bool AppTransit::close() {
     ESP_LOGI(TAG, "AppTransit::close()");
+    hide_card_modal();
+    _btn_card = nullptr;
     if (_bg_obj != nullptr) {
         lv_obj_delete_async(_bg_obj);
         _bg_obj = nullptr;

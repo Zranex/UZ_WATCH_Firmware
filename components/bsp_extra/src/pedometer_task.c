@@ -55,7 +55,7 @@ static void pedometer_task(void *pvParameter)
 
                 // If stationary for > 1 sec (~10 ticks at 100ms), relax polling to 250ms
                 if (still_ticks >= 10) {
-                    s_pedometer_delay_ms = 250;
+                    s_pedometer_delay_ms = 400; // Power saving when stationary
                 } else {
                     s_pedometer_delay_ms = 100;
                 }

@@ -22,8 +22,12 @@ public:
     static void force_close();
     static AppTransit* get_instance() { return _instance; }
 
+    void show_card_modal();
+    void hide_card_modal();
+
 private:
     static void on_refresh_clicked(lv_event_t* e);
+    static void on_card_clicked(lv_event_t* e);
 
     lv_obj_t* _bg_obj;
     lv_obj_t* _btn_back;
@@ -31,6 +35,11 @@ private:
     lv_obj_t* _lbl_status;
     lv_obj_t* _btn_refresh;
     lv_obj_t* _lbl_refresh;
+    lv_obj_t* _btn_card;
+    lv_obj_t* _modal_card;
+
+    uint8_t _saved_brightness;
+    std::string _istanbulkart_id;
 
     struct RouteCardUI {
         const char* badge_name;

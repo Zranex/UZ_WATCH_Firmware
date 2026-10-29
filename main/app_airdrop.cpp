@@ -1,3 +1,5 @@
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "lvgl.h"
 extern "C" const lv_image_dsc_t icon_airdrop;
 
@@ -24,17 +26,18 @@ static void on_airdrop_mode_toggle_clicked(lv_event_t* e) {
     AppAirDrop* app = (AppAirDrop*)lv_event_get_user_data(e);
     if (!app) return;
     
+    // Stop server first to avoid use-after-free on socket handles
+    AirDropManager::stop_server();
+
     if (wifi_manager_is_ap_active()) {
         ESP_LOGI(TAG, "Switching to Default Wi-Fi (STA)...");
         wifi_manager_connect_default();
-        AirDropManager::stop_server();
         AirDropManager::start_server();
         if (app->_label_btn_mode) lv_label_set_text(app->_label_btn_mode, LV_SYMBOL_WIFI " Hotspot Ac (Internetsiz)");
         if (app->_label_desc) lv_label_set_text(app->_label_desc, "Wi-Fi Baglaniyor...\nLutfen bekleyin.");
     } else {
         ESP_LOGI(TAG, "Switching to Hotspot (SoftAP)...");
         wifi_manager_start_ap("UZ_WATCH_AirDrop", NULL);
-        AirDropManager::stop_server();
         AirDropManager::start_server();
         if (app->_label_btn_mode) lv_label_set_text(app->_label_btn_mode, LV_SYMBOL_HOME " Ev Wi-Fi'a Gec");
         if (app->_label_desc) {
@@ -101,7 +104,7 @@ bool AppAirDrop::run() {
     _label_desc = lv_label_create(_bg_obj);
     lv_obj_set_style_text_color(_label_desc, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_text_font(_label_desc, &lv_font_montserrat_16, 0);
-    lv_label_set_text(_label_desc, "Wi-Fi Baslatiliyor...\nLutfen bekleyin.");
+    lv_label_set_text(_label_desc, "Hotspot Aktif (Internetsiz)!\n\n1. Telefonda baglanin:\nSSID: UZ_WATCH_AirDrop\n\n2. Tarayicida acin:\nhttp://192.168.4.1");
     lv_obj_set_style_text_align(_label_desc, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(_label_desc, LV_ALIGN_CENTER, 0, -20);
 
@@ -125,13 +128,13 @@ bool AppAirDrop::run() {
     _label_btn_mode = lv_label_create(_btn_toggle_mode);
     lv_obj_set_style_text_font(_label_btn_mode, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(_label_btn_mode, lv_color_hex(0x00E676), 0);
-    lv_label_set_text(_label_btn_mode, LV_SYMBOL_WIFI " Hotspot Ac (Internetsiz)");
+    lv_label_set_text(_label_btn_mode, LV_SYMBOL_HOME " Ev Wi-Fi'a Gec");
     lv_obj_center(_label_btn_mode);
 
-    // Auto-connect Wi-Fi if not connected
-    if (!wifi_manager_is_active()) {
-        ESP_LOGI(TAG, "AirDrop started -> initiating Wi-Fi connection...");
-        wifi_manager_connect_default();
+    // Default to SoftAP (Hotspot) for instant, router-less 100% reliable connection everywhere
+    if (!wifi_manager_is_active() || !wifi_manager_is_ap_active()) {
+        ESP_LOGI(TAG, "AirDrop started -> launching standalone SoftAP Hotspot...");
+        wifi_manager_start_ap("UZ_WATCH_AirDrop", NULL);
     }
 
     // Initialize SD Card & start HTTP Server
@@ -193,6 +196,7 @@ bool AppAirDrop::close() {
         _poll_timer = nullptr;
     }
     AirDropManager::stop_server();
+    vTaskDelay(pdMS_TO_TICKS(50));
     // Stop Wi-Fi to preserve battery
     wifi_manager_stop();
 

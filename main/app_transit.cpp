@@ -26,7 +26,7 @@ AppTransit::AppTransit()
     : esp_brookesia::systems::phone::App("Ulasim", &icon_transit, true),
       _bg_obj(nullptr), _lbl_title(nullptr), _lbl_status(nullptr),
       _btn_refresh(nullptr), _lbl_refresh(nullptr), _btn_card(nullptr),
-      _modal_card(nullptr), _saved_brightness(50), _istanbulkart_id("0474001234567890"),
+      _modal_card(nullptr), _saved_brightness(50), _istanbulkart_id("6370 6006 4376 7441 042B32F21D1F90 www.istanbulkart.istanbul"),
       _current_card_index(0), _card_obj(nullptr), _lbl_card_title(nullptr),
       _lbl_card_sub(nullptr), _lbl_card_id(nullptr), _qr_code(nullptr),
       _is_fetching(false)
@@ -170,9 +170,9 @@ void AppTransit::on_card_clicked(lv_event_t* e) {
 void AppTransit::update_active_card() {
     if (!_card_obj) return;
     const char* title = "istanbulkart";
-    const char* sub = "Toplu Tasima Dijital Gecis";
-    const char* id_lbl = "0474 **** **** 9012";
-    const char* qr_data = _istanbulkart_id.empty() ? "0474001234567890" : _istanbulkart_id.c_str();
+    const char* sub = "Orijinal Kart QR & Seri No";
+    const char* id_lbl = "6370 6006 4376 7441";
+    const char* qr_data = _istanbulkart_id.empty() ? "6370 6006 4376 7441 042B32F21D1F90 www.istanbulkart.istanbul" : _istanbulkart_id.c_str();
     lv_color_t border_col = lv_color_hex(0xC62828);
     lv_color_t title_col = lv_color_hex(0xFF5252);
 
@@ -251,23 +251,25 @@ void AppTransit::show_card_modal() {
     lv_label_set_text(_lbl_card_sub, "Dijital Gecis QR Kodu");
     lv_obj_align(_lbl_card_sub, LV_ALIGN_TOP_LEFT, 15, 38);
 
-    // White High-Contrast QR Frame
+    // White High-Contrast QR Frame (246x246 gives ISO 4-module 24px quiet zone around 198x198 QR)
     lv_obj_t* qr_frame = lv_obj_create(_card_obj);
-    lv_obj_set_size(qr_frame, 220, 220);
-    lv_obj_align(qr_frame, LV_ALIGN_CENTER, 0, -10);
+    lv_obj_set_size(qr_frame, 246, 246);
+    lv_obj_align(qr_frame, LV_ALIGN_CENTER, 0, -6);
     lv_obj_set_style_bg_color(qr_frame, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_bg_opa(qr_frame, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(qr_frame, 0, 0);
-    lv_obj_set_style_radius(qr_frame, 14, 0);
+    lv_obj_set_style_radius(qr_frame, 12, 0);
     lv_obj_set_style_shadow_width(qr_frame, 0, 0);
+    lv_obj_set_style_shadow_spread(qr_frame, 0, 0);
+    lv_obj_set_style_shadow_opa(qr_frame, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(qr_frame, LV_OBJ_FLAG_SCROLLABLE);
 
 #if LV_USE_QRCODE
     _qr_code = lv_qrcode_create(qr_frame);
-    lv_qrcode_set_size(_qr_code, 196);
+    lv_qrcode_set_size(_qr_code, 198); // Exact 6px/module for Version-4 (33x33) QR
     lv_qrcode_set_dark_color(_qr_code, lv_color_black());
     lv_qrcode_set_light_color(_qr_code, lv_color_white());
-    const char* qr_data = _istanbulkart_id.empty() ? "0474001234567890" : _istanbulkart_id.c_str();
+    const char* qr_data = _istanbulkart_id.empty() ? "6370 6006 4376 7441 042B32F21D1F90 www.istanbulkart.istanbul" : _istanbulkart_id.c_str();
     lv_qrcode_update(_qr_code, qr_data, strlen(qr_data));
     lv_obj_center(_qr_code);
 #endif
@@ -276,7 +278,7 @@ void AppTransit::show_card_modal() {
     _lbl_card_id = lv_label_create(_card_obj);
     lv_obj_set_style_text_font(_lbl_card_id, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(_lbl_card_id, lv_color_hex(0xFFFFFF), 0);
-    lv_label_set_text(_lbl_card_id, "0474 **** **** 9012");
+    lv_label_set_text(_lbl_card_id, "6370 6006 4376 7441");
     lv_obj_align(_lbl_card_id, LV_ALIGN_BOTTOM_MID, 0, -45);
 
     // Navigation Buttons: Prev [<] and Next [>] (zero-shadow flat pills)

@@ -156,6 +156,7 @@ extern "C" void app_main(void)
     esp_err_t sd_err = bsp_sdcard_mount();
     if(sd_err == ESP_OK) {
         ESP_UTILS_LOGI("SD Card mounted successfully!");
+        AppLockscreen::load_custom_from_sd();
     } else {
         ESP_UTILS_LOGE("Failed to mount SD Card: %d", sd_err);
     }
@@ -231,10 +232,9 @@ extern "C" void app_main(void)
 
     display_manager_set_sleep_cb([]() {
         pedometer_set_low_power(true);
-        if (wifi_manager_is_active()) {
-            ESP_LOGI("Power", "Screen sleeping: cleanly stopping HTTP server & Wi-Fi radio to eliminate standby drain");
-            AirDropManager::stop_server();
-            wifi_manager_stop();
+        if (wifi_manager_is_ap_active()) {
+            ESP_LOGI("Power", "Screen sleeping: cleanly stopping AirDrop Hotspot");
+            AppAirDrop::request_stop_async();
         }
         if (bsp_display_lock(1000)) {
             AppMediaPlayer::force_close();

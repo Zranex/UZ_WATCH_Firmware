@@ -1,7 +1,6 @@
 #pragma once
 
 #include "esp_brookesia.hpp"
-#include "esp_brookesia.hpp"
 #include "lvgl.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -13,6 +12,9 @@ public:
     AppLocalMusic();
     ~AppLocalMusic();
     void play_song_by_name(const char* name);
+    void release_audio_for_alarm();
+    void reload_playlist_external();
+    void request_close() { notifyCoreClosed(); }
 
 protected:
     bool run() override;
@@ -36,6 +38,7 @@ private:
     int _volume;
 
     lv_obj_t * _bg_obj;
+    lv_obj_t * _btn_back;
     lv_obj_t * _title_label;
     lv_obj_t * _btn_play;
     lv_obj_t * _lbl_play;
@@ -46,9 +49,11 @@ private:
     lv_obj_t * _vol_label;
     lv_obj_t * _status_label;
 
-    bool _is_playing;
-    bool _is_app_closed;
-    bool _song_changed;
+    volatile bool _is_playing;
+    volatile bool _is_app_closed;
+    volatile bool _song_changed;
+    volatile bool _release_codec_requested;
+    volatile bool _codec_currently_open;
     TaskHandle_t _audio_task_handle;
 };
 
@@ -56,6 +61,8 @@ private:
 extern "C" {
 #endif
 void app_local_music_play_from_ble(const char* song_name);
+void app_local_music_release_audio_for_alarm(void);
+void app_local_music_reload_playlist(void);
 #ifdef __cplusplus
 }
 #endif

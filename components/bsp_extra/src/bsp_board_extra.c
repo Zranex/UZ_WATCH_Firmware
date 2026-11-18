@@ -72,28 +72,14 @@ static i2c_master_dev_handle_t axp_dev_handle = NULL;
 static esp_timer_handle_t s_vib_off_timer = NULL;
 #define BSP_VIB_MOTOR_GPIO GPIO_NUM_18
 
-static void axp_set_aldo3_enable(bool enable) {
-    if (!axp_dev_handle) return;
-    uint8_t reg = 0x90, val = 0;
-    if (i2c_master_transmit_receive(axp_dev_handle, &reg, 1, &val, 1, I2C_MASTER_TIMEOUT_MS) == ESP_OK) {
-        uint8_t next = enable ? (val | (1 << 2)) : (val & ~(1 << 2));
-        if (next != val) {
-            uint8_t wr[2] = {0x90, next};
-            (void)i2c_master_transmit(axp_dev_handle, wr, 2, I2C_MASTER_TIMEOUT_MS);
-        }
-    }
-}
-
 static void vib_off_timer_cb(void* arg) {
     gpio_set_level(BSP_VIB_MOTOR_GPIO, 0);
-    axp_set_aldo3_enable(false);
 }
 
 void bsp_vibrate_pulse(uint32_t duration_ms) {
-    if (!axp_dev_handle || !s_vib_off_timer) return;
+    if (!s_vib_off_timer) return;
     if (duration_ms < 20) duration_ms = 20;
     if (duration_ms > 500) duration_ms = 500;
-    axp_set_aldo3_enable(true);
     gpio_set_level(BSP_VIB_MOTOR_GPIO, 1);
     esp_timer_stop(s_vib_off_timer);
     (void)esp_timer_start_once(s_vib_off_timer, (uint64_t)duration_ms * 1000ULL);
@@ -183,7 +169,7 @@ esp_err_t bsp_battery_init(void) {
     }
     uint8_t wr_aldo3_v[2] = {0x94, 0x1C}; // ALDO3 = 3.3V (when motor pulsed)
     (void)i2c_master_transmit(axp_dev_handle, wr_aldo3_v, 2, I2C_MASTER_TIMEOUT_MS);
-    uint8_t wr_ldo0[2] = {0x90, 0x03}; // Only ALDO1 + ALDO2 ON
+    uint8_t wr_ldo0[2] = {0x90, 0x07}; // ALDO1 + ALDO2 + ALDO3 ON (GPIO18 NPN switch gates motor current)
     (void)i2c_master_transmit(axp_dev_handle, wr_ldo0, 2, I2C_MASTER_TIMEOUT_MS);
     uint8_t wr_ldo1[2] = {0x91, 0x00}; // DLDO2 OFF
     (void)i2c_master_transmit(axp_dev_handle, wr_ldo1, 2, I2C_MASTER_TIMEOUT_MS);

@@ -33,3 +33,12 @@ private:
     static void btn_alarm_cb(lv_event_t *e);
     void update_ui();
 };
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+void app_find_watch_start_alarm(void);
+void app_find_watch_stop_alarm(void);
+#ifdef __cplusplus
+}
+#endif

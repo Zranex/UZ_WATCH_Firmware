@@ -1,6 +1,9 @@
 #include "airdrop_manager.hpp"
 #include "bsp/esp32_s3_touch_amoled_2_06.h"
 #include "display_manager.h"
+#include "app_lockscreen.hpp"
+#include "bsp_board_extra.h"
+#include "ui_notification_banner.hpp"
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include <sys/stat.h>
@@ -12,12 +15,17 @@
 #include <time.h>
 #include "esp_heap_caps.h"
 
+extern "C" {
+void app_local_music_reload_playlist(void);
+}
+
 static const char *TAG = "AirDrop";
 bool AirDropManager::_is_sd_mounted = false;
 void* AirDropManager::_server_handle = nullptr;
 
-// Base path for AirDrop files
+// Base paths
 #define AIRDROP_BASE_PATH BSP_SD_MOUNT_POINT "/AirDrop"
+#define MUSICS_BASE_PATH  BSP_SD_MOUNT_POINT "/musics"
 
 /* URL Decoding Helper */
 static void url_decode(char *dst, const char *src, size_t max_len) {
@@ -80,74 +88,98 @@ static void sanitize_filename(char *dst, const char *src, size_t max_len) {
     }
     dst[o] = '\0';
 
-    // Fallback if filename became empty
     if (strlen(dst) == 0) {
         strncpy(dst, "upload_file.bin", max_len - 1);
         dst[max_len - 1] = '\0';
     }
 }
 
+static bool find_target_file(char* out_path, size_t max_len, const char* filename) {
+    struct stat st;
+    // 1. Check musics folder
+    snprintf(out_path, max_len, "%s/%s", MUSICS_BASE_PATH, filename);
+    if (stat(out_path, &st) == 0) return true;
+
+    // 2. Check AirDrop folder
+    snprintf(out_path, max_len, "%s/%s", AIRDROP_BASE_PATH, filename);
+    if (stat(out_path, &st) == 0) return true;
+
+    // 3. Check SD root folder
+    snprintf(out_path, max_len, "%s/%s", BSP_SD_MOUNT_POINT, filename);
+    if (stat(out_path, &st) == 0) return true;
+
+    return false;
+}
+
 /* HTTP Handlers */
 
-// 1. List files (GET /list)
+// 1. List files (GET /list) - scans /musics, /AirDrop, and /sdcard recordings
 static esp_err_t list_get_handler(httpd_req_t *req) {
     display_manager_reset_timer();
-    const char *base = AIRDROP_BASE_PATH;
-    DIR *dir = opendir(base);
-    if (!dir) {
-        base = BSP_SD_MOUNT_POINT;
-        dir = opendir(base);
-    }
-    if (!dir) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD Kart okunamadi");
-        return ESP_FAIL;
-    }
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr_chunk(req, "[");
-    
-    bool first = true;
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_type == DT_DIR) continue;
-        if (entry->d_name[0] == '.') continue;
-        
-        char fullpath[384];
-        snprintf(fullpath, sizeof(fullpath), "%s/%s", base, entry->d_name);
-        struct stat st = {0};
-        int64_t fsize = 0;
-        if (stat(fullpath, &st) == 0) {
-            fsize = (int64_t)st.st_size;
-        }
 
-        char json[384];
-        snprintf(json, sizeof(json), "%s{\"name\":\"%s\",\"size\":%lld}", first ? "" : ",", entry->d_name, (long long)fsize);
-        httpd_resp_sendstr_chunk(req, json);
-        first = false;
+    bool first = true;
+    const char* scan_dirs[] = { MUSICS_BASE_PATH, AIRDROP_BASE_PATH, BSP_SD_MOUNT_POINT };
+    const char* dir_tags[]  = { "music", "airdrop", "record" };
+
+    for (int d_idx = 0; d_idx < 3; d_idx++) {
+        DIR *dir = opendir(scan_dirs[d_idx]);
+        if (!dir) continue;
+
+        struct dirent *entry;
+        while ((entry = readdir(dir)) != NULL) {
+            if (entry->d_type == DT_DIR) continue;
+            if (entry->d_name[0] == '.') continue;
+
+            // In SD root, only list voice memo recordings or loose audio
+            if (d_idx == 2) {
+                if (strncmp(entry->d_name, "rec_", 4) != 0 &&
+                    strstr(entry->d_name, ".wav") == NULL) {
+                    continue;
+                }
+            }
+
+            char fullpath[384];
+            snprintf(fullpath, sizeof(fullpath), "%s/%s", scan_dirs[d_idx], entry->d_name);
+            struct stat st = {0};
+            int64_t fsize = 0;
+            if (stat(fullpath, &st) == 0) {
+                fsize = (int64_t)st.st_size;
+            }
+
+            char json[384];
+            snprintf(json, sizeof(json), "%s{\"name\":\"%s\",\"size\":%lld,\"dir\":\"%s\"}",
+                     first ? "" : ",", entry->d_name, (long long)fsize, dir_tags[d_idx]);
+            httpd_resp_sendstr_chunk(req, json);
+            first = false;
+        }
+        closedir(dir);
     }
-    closedir(dir);
-    
+
     httpd_resp_sendstr_chunk(req, "]");
-    httpd_resp_sendstr_chunk(req, NULL); // Finish chunked response
+    httpd_resp_sendstr_chunk(req, NULL);
     return ESP_OK;
 }
 
-// 2. Upload file (POST /upload?filename=abc.jpg)
+// 2. Upload file (POST /upload?filename=abc.wav)
 static esp_err_t upload_post_handler(httpd_req_t *req) {
     display_manager_reset_timer();
     char raw_filename[256] = {0};
+    char target_dir_param[32] = {0};
     size_t buf_len = httpd_req_get_url_query_len(req) + 1;
     if (buf_len > 1) {
         char *buf = (char *)malloc(buf_len);
         if (buf && httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
             httpd_query_key_value(buf, "filename", raw_filename, sizeof(raw_filename));
+            httpd_query_key_value(buf, "dir", target_dir_param, sizeof(target_dir_param));
         }
         if (buf) free(buf);
     }
 
-    // If filename wasn't found in query param, generate timestamped fallback
     if (strlen(raw_filename) == 0) {
-        snprintf(raw_filename, sizeof(raw_filename), "photo_%lu.jpg", (unsigned long)time(NULL));
+        snprintf(raw_filename, sizeof(raw_filename), "media_%lu.bin", (unsigned long)time(NULL));
     }
 
     char decoded_filename[256];
@@ -156,34 +188,37 @@ static esp_err_t upload_post_handler(httpd_req_t *req) {
     char clean_filename[256];
     sanitize_filename(clean_filename, decoded_filename, sizeof(clean_filename));
 
-    ESP_LOGI(TAG, "Upload request: raw='%s', clean='%s', size=%d bytes", 
-             raw_filename, clean_filename, req->content_len);
+    bool is_music = false;
+    size_t c_len = strlen(clean_filename);
+    if ((c_len > 4 && strcasecmp(clean_filename + c_len - 4, ".wav") == 0) ||
+        strcmp(target_dir_param, "musics") == 0) {
+        is_music = true;
+    }
 
-    // Ensure AirDrop directory exists
+    // Target folder: /musics for songs, /AirDrop for other files
+    const char *target_dir = is_music ? MUSICS_BASE_PATH : AIRDROP_BASE_PATH;
     struct stat st = {0};
-    if (stat(AIRDROP_BASE_PATH, &st) == -1) {
-        mkdir(AIRDROP_BASE_PATH, 0777);
+    if (stat(target_dir, &st) == -1) {
+        mkdir(target_dir, 0777);
     }
 
     char filepath[320];
-    snprintf(filepath, sizeof(filepath), "%s/%s", AIRDROP_BASE_PATH, clean_filename);
+    snprintf(filepath, sizeof(filepath), "%s/%s", target_dir, clean_filename);
+
+    ESP_LOGI(TAG, "Receiving upload -> file='%s', size=%d bytes", filepath, req->content_len);
 
     FILE *fd = fopen(filepath, "wb");
     if (!fd) {
-        ESP_LOGE(TAG, "Failed to create %s (errno %d: %s). Trying root SD...", filepath, errno, strerror(errno));
-        // Fallback: Try root SD card folder
+        ESP_LOGE(TAG, "Failed to create %s (errno %d: %s). Falling back to root...", filepath, errno, strerror(errno));
         snprintf(filepath, sizeof(filepath), "%s/%s", BSP_SD_MOUNT_POINT, clean_filename);
         fd = fopen(filepath, "wb");
         if (!fd) {
-            ESP_LOGE(TAG, "Fallback also failed: %s (errno %d: %s)", filepath, errno, strerror(errno));
+            ESP_LOGE(TAG, "Fallback failed: %s (errno %d)", filepath, errno);
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD Karta dosya acilamadi");
             return ESP_FAIL;
         }
     }
 
-    ESP_LOGI(TAG, "Receiving file to : %s...", filepath);
-
-    // PSRAM buffer prefered for high-speed SD transfer
     char *chunk = (char *)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!chunk) {
         chunk = (char *)malloc(4096);
@@ -204,81 +239,134 @@ static esp_err_t upload_post_handler(httpd_req_t *req) {
         received = httpd_req_recv(req, chunk, to_recv);
         if (received <= 0) {
             if (received == HTTPD_SOCK_ERR_TIMEOUT) {
-                if (++timeout_retries < 20) {
+                if (++timeout_retries < 25) {
                     vTaskDelay(pdMS_TO_TICKS(10));
-                    continue; // Retry receiving
+                    continue;
                 }
             }
-            // Error occurred
             fclose(fd);
             free(chunk);
-            unlink(filepath); // Delete incomplete file
-            ESP_LOGE(TAG, "File reception failed! (err: %d)", received);
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Veri aktarimi kesildi");
+            unlink(filepath);
+            ESP_LOGE(TAG, "Upload failed! (err: %d)", received);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Aktarim kesildi");
             return ESP_FAIL;
         }
         timeout_retries = 0;
         fwrite(chunk, 1, received, fd);
         remaining -= received;
         display_manager_reset_timer();
-        
         vTaskDelay(pdMS_TO_TICKS(1));
     }
-    
+
     fflush(fd);
     fclose(fd);
     free(chunk);
-    ESP_LOGI(TAG, "File reception complete: %s (%d bytes)", filepath, req->content_len);
+    ESP_LOGI(TAG, "Upload finished: %s (%d bytes)", filepath, req->content_len);
+
+    if (is_music) {
+        app_local_music_reload_playlist();
+        bsp_vibrate_pulse(120);
+        app_notifications_show_system_alert("Yeni sarki yuklendi!");
+    } else {
+        bsp_vibrate_pulse(80);
+        app_notifications_show_system_alert("Dosya yuklendi!");
+    }
 
     httpd_resp_sendstr(req, "OK");
     return ESP_OK;
+}
+
+// 3. Delete file (POST /delete?filename=abc.wav)
+static esp_err_t delete_post_handler(httpd_req_t *req) {
+    display_manager_reset_timer();
+    char raw_filename[256] = {0};
+    size_t buf_len = httpd_req_get_url_query_len(req) + 1;
+    if (buf_len > 1) {
+        char *buf = (char *)malloc(buf_len);
+        if (buf && httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+            httpd_query_key_value(buf, "filename", raw_filename, sizeof(raw_filename));
+        }
+        if (buf) free(buf);
+    }
+
+    if (strlen(raw_filename) == 0) {
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+    }
+
+    char decoded_filename[256];
+    url_decode(decoded_filename, raw_filename, sizeof(decoded_filename));
+
+    char filepath[320];
+    if (!find_target_file(filepath, sizeof(filepath), decoded_filename)) {
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Deleting file: %s", filepath);
+    if (unlink(filepath) == 0) {
+        size_t d_len = strlen(decoded_filename);
+        if (d_len > 4 && strcasecmp(decoded_filename + d_len - 4, ".wav") == 0) {
+            app_local_music_reload_playlist();
+        }
+        bsp_vibrate_pulse(60);
+        httpd_resp_sendstr(req, "OK");
+        return ESP_OK;
+    } else {
+        ESP_LOGE(TAG, "Failed to unlink %s (errno %d)", filepath, errno);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Dosya silinemedi");
+        return ESP_FAIL;
+    }
 }
 
 static const char s_airdrop_index_html[] = 
 "<!DOCTYPE html><html><head><meta charset='utf-8'>"
 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
 "<title>UZ WATCH AirDrop</title><style>"
-"body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#121212;color:#fff;margin:0;padding:20px;text-align:center}"
-"h1{color:#00e676;margin-bottom:5px;font-size:24px}p{color:#aaa;font-size:14px;margin-top:0}"
-".card{background:#1e1e1e;border-radius:14px;padding:20px;margin:15px auto;max-width:440px;border:1px solid #333;box-sizing:border-box}"
-"input[type=file]{margin:15px 0;color:#ccc;width:100%;box-sizing:border-box}"
-"button.btn-send{background:#00e676;color:#000;border:none;padding:12px 24px;border-radius:8px;font-size:16px;font-weight:bold;cursor:pointer;width:100%}"
+"body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#121212;color:#fff;margin:0;padding:16px;text-align:center}"
+"h1{color:#00e676;margin-bottom:4px;font-size:24px}p{color:#aaa;font-size:14px;margin-top:0}"
+".card{background:#1e1e1e;border-radius:14px;padding:18px;margin:12px auto;max-width:440px;border:1px solid #333;box-sizing:border-box}"
+"input[type=file]{margin:12px 0;color:#ccc;width:100%;box-sizing:border-box}"
+"button.btn-send{background:#00e676;color:#000;border:none;padding:12px 24px;border-radius:8px;font-size:15px;font-weight:bold;cursor:pointer;width:100%}"
 "button.btn-send:hover{background:#00c853}"
-"#status{margin-top:15px;font-weight:bold;color:#00e676;font-size:14px;word-break:break-all}"
-".progress-bar{width:100%;height:8px;background:#333;border-radius:4px;overflow:hidden;margin-top:12px;display:none}"
+"#status{margin-top:12px;font-weight:bold;color:#00e676;font-size:14px;word-break:break-all}"
+".progress-bar{width:100%;height:8px;background:#333;border-radius:4px;overflow:hidden;margin-top:10px;display:none}"
 ".progress-fill{height:100%;background:#00e676;width:0%;transition:width 0.2s}"
-".files{text-align:left;margin-top:20px}"
-".file-item{background:#252525;padding:12px 14px;border-radius:10px;margin:10px 0;display:flex;justify-content:space-between;align-items:center;border:1px solid #333}"
-".file-info{display:flex;flex-direction:column;overflow:hidden;margin-right:10px;flex:1}"
-".file-name{word-break:break-all;font-size:14px;font-weight:500}"
-".file-size{font-size:11px;color:#888;margin-top:3px}"
-".file-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}"
-".btn-view{background:#00e676;color:#000;border:none;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:bold;cursor:pointer;white-space:nowrap}"
-".btn-view:hover{background:#00c853}"
-"a.dl{background:#333;color:#eee;text-decoration:none;font-weight:600;padding:6px 10px;border-radius:6px;font-size:12px;white-space:nowrap}"
-"a.dl:hover{background:#444;color:#fff}"
+".files{text-align:left;margin-top:16px}"
+".file-item{background:#252525;padding:10px 12px;border-radius:10px;margin:8px 0;display:flex;justify-content:space-between;align-items:center;border:1px solid #333}"
+".file-info{display:flex;flex-direction:column;overflow:hidden;margin-right:8px;flex:1}"
+".file-name{word-break:break-all;font-size:13px;font-weight:500}"
+".file-size{font-size:11px;color:#888;margin-top:2px}"
+".file-badge{display:inline-block;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:bold;margin-left:6px}"
+".badge-music{background:#00e676;color:#000}"
+".badge-airdrop{background:#2196F3;color:#fff}"
+".badge-record{background:#FF9800;color:#000}"
+".file-actions{display:flex;align-items:center;gap:5px;flex-shrink:0}"
+".btn-view{background:#00e676;color:#000;border:none;padding:5px 10px;border-radius:6px;font-size:11px;font-weight:bold;cursor:pointer}"
+".btn-del{background:#d32f2f;color:#fff;border:none;padding:5px 8px;border-radius:6px;font-size:11px;font-weight:bold;cursor:pointer}"
+"a.dl{background:#333;color:#eee;text-decoration:none;font-weight:600;padding:5px 8px;border-radius:6px;font-size:11px}"
 ".modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.88);z-index:9999;align-items:center;justify-content:center;padding:12px;box-sizing:border-box}"
-".modal-content{background:#1e1e1e;border-radius:16px;max-width:540px;width:100%;max-height:92vh;display:flex;flex-direction:column;border:1px solid #3a3a3a;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,0.9)}"
-".modal-header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #2a2a2a}"
-".modal-title{font-size:14px;font-weight:600;color:#00e676;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:80%}"
-".btn-close{background:none;border:none;color:#aaa;font-size:26px;line-height:1;cursor:pointer;padding:0;width:32px;height:32px}"
-".btn-close:hover{color:#fff}"
+".modal-content{background:#1e1e1e;border-radius:16px;max-width:540px;width:100%;max-height:92vh;display:flex;flex-direction:column;border:1px solid #3a3a3a;overflow:hidden}"
+".modal-header{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid #2a2a2a}"
+".modal-title{font-size:13px;font-weight:600;color:#00e676;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:80%}"
+".btn-close{background:none;border:none;color:#aaa;font-size:24px;cursor:pointer;padding:0}"
 ".media-box{flex:1;display:flex;align-items:center;justify-content:center;padding:12px;overflow:auto;background:#0d0d0d}"
 ".media-box img{max-width:100%;max-height:68vh;object-fit:contain;border-radius:8px}"
-".media-box video{max-width:100%;max-height:68vh;border-radius:8px;background:#000;outline:none;width:100%}"
-".modal-footer{padding:10px 16px;border-top:1px solid #2a2a2a;text-align:right}"
+".media-box video{max-width:100%;max-height:68vh;border-radius:8px;background:#000;width:100%}"
+".modal-footer{padding:8px 14px;border-top:1px solid #2a2a2a;text-align:right}"
 "</style></head><body>"
 "<h1>UZ WATCH AirDrop</h1>"
-"<p>Kablosuz Medya & Dosya Portali</p>"
+"<p>Muzik & Medya & Dosya Portali</p>"
 "<div class='card'>"
-"<h3>Saate Dosya / Medya Yukle</h3>"
+"<h3>Saate Dosya / Sarki Yukle</h3>"
 "<input type='file' id='fileInput'><br>"
 "<button class='btn-send' id='btnSend' onclick='uploadFile()'>Saate Gonder</button>"
 "<div class='progress-bar' id='progBar'><div class='progress-fill' id='progFill'></div></div>"
 "<div id='status'></div>"
+"<p style='font-size:11px;color:#888;margin-top:10px'>Not: <b>.wav</b> sarkilar otomatik olarak Saatin Muzik Calarina eklenir.</p>"
 "</div>"
 "<div class='card files'>"
-"<h3>Saatteki Dosyalar (/AirDrop)</h3>"
+"<h3>Saatteki Sarkilar ve Dosyalar</h3>"
 "<div id='fileList'>Yukleniyor...</div>"
 "</div>"
 "<div id='mediaModal' class='modal' onclick='closeModal(event)'>"
@@ -317,7 +405,7 @@ static const char s_airdrop_index_html[] =
 "  }else if(isVid(name)){"
 "    box.innerHTML=\"<video src='\"+src+\"' controls autoplay playsinline></video>\";"
 "  }else if(isAud(name)){"
-"    box.innerHTML=\"<div style='text-align:center;width:100%;padding:20px 0'><div style='font-size:48px;margin-bottom:12px'>🎵</div><audio src='\"+src+\"' controls autoplay style='width:90%'></audio></div>\";"
+"    box.innerHTML=\"<div style='text-align:center;width:100%;padding:20px 0'><div style='font-size:42px;margin-bottom:8px'>🎵</div><audio src='\"+src+\"' controls autoplay style='width:90%'></audio></div>\";"
 "  }else{"
 "    window.open(src,'_blank');"
 "    return;"
@@ -330,7 +418,12 @@ static const char s_airdrop_index_html[] =
 "  m.style.display='none';"
 "  b.innerHTML='';"
 "}"
-"document.addEventListener('keydown',function(e){if(e.key==='Escape')closeModal();});"
+"function deleteFile(name){"
+"  if(!confirm('\"'+name+'\" saatten silinsin mi?')) return;"
+"  fetch('/delete?filename='+encodeURIComponent(name),{method:'POST'}).then(r=>{"
+"    loadFiles();"
+"  }).catch(e=>{ alert('Silinemedi!'); });"
+"}"
 "function loadFiles(){"
 "  fetch('/list').then(r=>r.json()).then(files=>{"
 "    let h='';"
@@ -342,18 +435,22 @@ static const char s_airdrop_index_html[] =
 "        if(isImg(f.name)) icon='📷';"
 "        else if(isVid(f.name)) icon='🎬';"
 "        else if(isAud(f.name)) icon='🎵';"
+"        let badgeCls='badge-airdrop', badgeTxt='AirDrop';"
+"        if(f.dir==='music'){ badgeCls='badge-music'; badgeTxt='Muzik'; }"
+"        else if(f.dir==='record'){ badgeCls='badge-record'; badgeTxt='Ses Kaydi'; }"
 "        let sz=f.size?fmtSize(f.size):'';"
 "        let btnLabel=isVid(f.name)?'▶ Izle':(isAud(f.name)?'🎵 Dinle':'👁 Gor');"
 "        let enc=encodeURIComponent(f.name);"
 "        let safeName=f.name.replace(/\"/g,'&quot;').replace(/'/g,'&#39;');"
 "        h+=\"<div class='file-item'>\"+"
 "            \"<div class='file-info'>\"+"
-"              \"<span class='file-name' style='\"+(media?\"cursor:pointer;color:#00e676\":\"\")+\"' onclick='\"+(media?\"openMedia(\\\"\"+safeName+\"\\\")\":\"\")+\"'>\"+icon+\" \"+safeName+\"</span>\"+"
+"              \"<span class='file-name'>\"+icon+\" \"+safeName+\"<span class='file-badge \"+badgeCls+\"'>\"+badgeTxt+\"</span></span>\"+"
 "              (sz?\"<span class='file-size'>\"+sz+\"</span>\":\"\")+"
 "            \"</div>\"+"
 "            \"<div class='file-actions'>\"+"
 "              (media?\"<button class='btn-view' onclick='openMedia(\\\"\"+safeName+\"\\\")'>\"+btnLabel+\"</button>\":\"\")+"
 "              \"<a class='dl' href='/download?filename=\"+enc+\"' download>Indir</a>\"+"
+"              \"<button class='btn-del' onclick='deleteFile(\\\"\"+safeName+\"\\\")'>Sil</button>\"+"
 "            \"</div>\"+"
 "           \"</div>\";"
 "      });"
@@ -369,12 +466,9 @@ static const char s_airdrop_index_html[] =
 "  let pBar=document.getElementById('progBar');"
 "  let pFill=document.getElementById('progFill');"
 "  let btn=document.getElementById('btnSend');"
-"  btn.disabled=true;"
-"  btn.style.opacity='0.6';"
-"  pBar.style.display='block';"
-"  pFill.style.width='0%';"
-"  s.style.color='#00e676';"
-"  s.innerText='Yukleme baslatiliyor...';"
+"  btn.disabled=true; btn.style.opacity='0.6';"
+"  pBar.style.display='block'; pFill.style.width='0%';"
+"  s.style.color='#00e676'; s.innerText='Yukleme baslatiliyor...';"
 "  let xhr=new XMLHttpRequest();"
 "  xhr.open('POST','/upload?filename='+encodeURIComponent(f.name),true);"
 "  xhr.upload.onprogress=function(e){"
@@ -387,8 +481,7 @@ static const char s_airdrop_index_html[] =
 "    }"
 "  };"
 "  xhr.onload=function(){"
-"    btn.disabled=false;"
-"    btn.style.opacity='1';"
+"    btn.disabled=false; btn.style.opacity='1';"
 "    if(xhr.status===200){"
 "      pFill.style.width='100%';"
 "      s.style.color='#00e676';"
@@ -402,8 +495,7 @@ static const char s_airdrop_index_html[] =
 "    }"
 "  };"
 "  xhr.onerror=function(){"
-"    btn.disabled=false;"
-"    btn.style.opacity='1';"
+"    btn.disabled=false; btn.style.opacity='1';"
 "    s.style.color='#ff5252';"
 "    s.innerText='Baglanti hatasi olustu!';"
 "  };"
@@ -435,7 +527,7 @@ static const char* get_mime_type(const char *filename) {
     return "application/octet-stream";
 }
 
-// 3. Download file (GET /download?filename=abc.txt)
+// 4. Download file (GET /download?filename=abc.wav)
 static esp_err_t download_get_handler(httpd_req_t *req) {
     display_manager_reset_timer();
     char raw_filename[256] = {0};
@@ -457,14 +549,13 @@ static esp_err_t download_get_handler(httpd_req_t *req) {
     url_decode(decoded_filename, raw_filename, sizeof(decoded_filename));
 
     char filepath[320];
-    snprintf(filepath, sizeof(filepath), "%s/%s", AIRDROP_BASE_PATH, decoded_filename);
+    if (!find_target_file(filepath, sizeof(filepath), decoded_filename)) {
+        ESP_LOGE(TAG, "File not found for download: %s", decoded_filename);
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+    }
 
     FILE *fd = fopen(filepath, "rb");
-    if (!fd) {
-        // Fallback: try root SD
-        snprintf(filepath, sizeof(filepath), "%s/%s", BSP_SD_MOUNT_POINT, decoded_filename);
-        fd = fopen(filepath, "rb");
-    }
     if (!fd) {
         ESP_LOGE(TAG, "Failed to open file for download: %s", filepath);
         httpd_resp_send_404(req);
@@ -495,7 +586,7 @@ static esp_err_t download_get_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// 4. View / Stream file with HTTP 206 Range support (GET /view?filename=abc.mp4)
+// 5. View / Stream file with HTTP 206 Range support (GET /view?filename=abc.mp4)
 static esp_err_t view_get_handler(httpd_req_t *req) {
     display_manager_reset_timer();
     char raw_filename[256] = {0};
@@ -517,16 +608,16 @@ static esp_err_t view_get_handler(httpd_req_t *req) {
     url_decode(decoded_filename, raw_filename, sizeof(decoded_filename));
 
     char filepath[320];
-    snprintf(filepath, sizeof(filepath), "%s/%s", AIRDROP_BASE_PATH, decoded_filename);
+    if (!find_target_file(filepath, sizeof(filepath), decoded_filename)) {
+        ESP_LOGE(TAG, "File not found for view: %s", decoded_filename);
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+    }
 
     struct stat st;
     if (stat(filepath, &st) != 0) {
-        snprintf(filepath, sizeof(filepath), "%s/%s", BSP_SD_MOUNT_POINT, decoded_filename);
-        if (stat(filepath, &st) != 0) {
-            ESP_LOGE(TAG, "File not found for view: %s", filepath);
-            httpd_resp_send_404(req);
-            return ESP_FAIL;
-        }
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
     }
 
     FILE *fd = fopen(filepath, "rb");
@@ -583,7 +674,7 @@ static esp_err_t view_get_handler(httpd_req_t *req) {
             "Content-Length: %lld\r\n"
             "Accept-Ranges: bytes\r\n"
             "Connection: keep-alive\r\n\r\n",
-            mime, (long long)total_size);
+            mime, (long long)(total_size));
     }
 
     if (httpd_send(req, hdr, hdr_len) <= 0) {
@@ -617,11 +708,100 @@ static esp_err_t view_get_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// 5. Index page (GET /)
+// 6. Index page (GET /)
 static esp_err_t index_get_handler(httpd_req_t *req) {
     display_manager_reset_timer();
     httpd_resp_set_type(req, "text/html");
     httpd_resp_sendstr(req, s_airdrop_index_html);
+    return ESP_OK;
+}
+
+// 7. Custom Lockscreen Wallpaper Upload (POST /wallpaper, exact 410x502 RGB565 = 411640 bytes)
+static esp_err_t wallpaper_post_handler(httpd_req_t *req) {
+    display_manager_reset_timer();
+    if ((size_t)req->content_len != AppLockscreen::WALLPAPER_BYTES) {
+        ESP_LOGE(TAG, "Invalid wallpaper size: %d (expected %u)", req->content_len, (unsigned)AppLockscreen::WALLPAPER_BYTES);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Gecersiz duvar kagidi boyutu");
+        return ESP_FAIL;
+    }
+
+    const char *tmp_path = BSP_SD_MOUNT_POINT "/lockscreen_custom.tmp";
+    const char *final_path = BSP_SD_MOUNT_POINT "/lockscreen_custom.rgb565";
+
+    FILE *fd = fopen(tmp_path, "wb");
+    if (!fd) {
+        ESP_LOGE(TAG, "Failed to open %s for writing", tmp_path);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD Karta yazilamadi");
+        return ESP_FAIL;
+    }
+
+    char *chunk = (char *)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    int chunk_size = 8192;
+    if (!chunk) {
+        chunk = (char *)malloc(4096);
+        chunk_size = 4096;
+    }
+    if (!chunk) {
+        fclose(fd);
+        unlink(tmp_path);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Yetersiz bellek");
+        return ESP_FAIL;
+    }
+
+    int remaining = req->content_len;
+    int timeout_retries = 0;
+    while (remaining > 0) {
+        int to_recv = MIN(remaining, chunk_size);
+        int received = httpd_req_recv(req, chunk, to_recv);
+        if (received <= 0) {
+            if (received == HTTPD_SOCK_ERR_TIMEOUT && ++timeout_retries < 20) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+                continue;
+            }
+            fclose(fd);
+            free(chunk);
+            unlink(tmp_path);
+            ESP_LOGE(TAG, "Wallpaper upload interrupted (err=%d)", received);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Baglanti kesildi");
+            return ESP_FAIL;
+        }
+        timeout_retries = 0;
+        if (fwrite(chunk, 1, received, fd) != (size_t)received) {
+            fclose(fd);
+            free(chunk);
+            unlink(tmp_path);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD Kart yazma hatasi");
+            return ESP_FAIL;
+        }
+        remaining -= received;
+        display_manager_reset_timer();
+    }
+
+    fflush(fd);
+    fclose(fd);
+    free(chunk);
+
+    unlink(final_path);
+    if (rename(tmp_path, final_path) != 0) {
+        ESP_LOGE(TAG, "Failed to rename %s -> %s", tmp_path, final_path);
+        unlink(tmp_path);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Dosya kaydedilemedi");
+        return ESP_FAIL;
+    }
+
+    bool ok = AppLockscreen::load_custom_from_sd();
+    bsp_vibrate_pulse(130);
+    app_notifications_show_system_alert(ok ? "Kilit ekrani guncellendi!" : "Yukleme hatasi!");
+    httpd_resp_sendstr(req, ok ? "OK" : "ERR");
+    return ok ? ESP_OK : ESP_FAIL;
+}
+
+static esp_err_t wallpaper_reset_post_handler(httpd_req_t *req) {
+    display_manager_reset_timer();
+    AppLockscreen::reset_to_default();
+    bsp_vibrate_pulse(80);
+    app_notifications_show_system_alert("Varsayilan ekrana donuldu");
+    httpd_resp_sendstr(req, "OK");
     return ESP_OK;
 }
 
@@ -668,6 +848,26 @@ static const httpd_uri_t uri_view = {
     .user_ctx  = NULL
 };
 
+static const httpd_uri_t uri_delete = {
+    .uri       = "/delete",
+    .method    = HTTP_POST,
+    .handler   = delete_post_handler,
+    .user_ctx  = NULL
+};
+
+static const httpd_uri_t uri_wallpaper = {
+    .uri       = "/wallpaper",
+    .method    = HTTP_POST,
+    .handler   = wallpaper_post_handler,
+    .user_ctx  = NULL
+};
+
+static const httpd_uri_t uri_wallpaper_reset = {
+    .uri       = "/wallpaper_reset",
+    .method    = HTTP_POST,
+    .handler   = wallpaper_reset_post_handler,
+    .user_ctx  = NULL
+};
 
 esp_err_t AirDropManager::init() {
     if (_is_sd_mounted) return ESP_OK;
@@ -688,11 +888,14 @@ esp_err_t AirDropManager::init() {
         _is_sd_mounted = true;
     }
 
-    // Create /AirDrop directory if it doesn't exist
     struct stat st = {0};
     if (stat(AIRDROP_BASE_PATH, &st) == -1) {
         mkdir(AIRDROP_BASE_PATH, 0777);
         ESP_LOGI(TAG, "Created %s directory", AIRDROP_BASE_PATH);
+    }
+    if (stat(MUSICS_BASE_PATH, &st) == -1) {
+        mkdir(MUSICS_BASE_PATH, 0777);
+        ESP_LOGI(TAG, "Created %s directory", MUSICS_BASE_PATH);
     }
 
     return ESP_OK;
@@ -703,13 +906,15 @@ esp_err_t AirDropManager::start_server() {
         ESP_LOGW(TAG, "SD Card not mounted. Cannot start AirDrop server.");
         return ESP_FAIL;
     }
-    if (_server_handle) return ESP_OK; // Already running
+    if (_server_handle) return ESP_OK;
 
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_open_sockets = 4;
-    config.stack_size = 10240; // 10KB stack for safe FATFS/SDMMC file operations
-    config.recv_wait_timeout = 15; // 15 seconds for larger file chunks over Wi-Fi
+    config.max_open_sockets = 3;
+    config.lru_purge_enable = true;
+    config.max_uri_handlers = 12;
+    config.stack_size = 6144;
+    config.recv_wait_timeout = 15;
     config.send_wait_timeout = 15;
 
     ESP_LOGI(TAG, "Starting AirDrop HTTP Server on port: '%d'", config.server_port);
@@ -720,6 +925,9 @@ esp_err_t AirDropManager::start_server() {
         httpd_register_uri_handler(server, &uri_upload);
         httpd_register_uri_handler(server, &uri_download);
         httpd_register_uri_handler(server, &uri_view);
+        httpd_register_uri_handler(server, &uri_delete);
+        httpd_register_uri_handler(server, &uri_wallpaper);
+        httpd_register_uri_handler(server, &uri_wallpaper_reset);
         _server_handle = (void*)server;
         return ESP_OK;
     }

@@ -56,6 +56,12 @@ extern void app_weather_update_advanced_from_ble(const char* city, const char* t
 
 extern void app_agenda_update_from_ble(const char* payload);
 extern void app_transit_update_from_ble(const char* payload);
+extern void app_notifications_update_quick_replies(const char* payload);
+extern void app_notifications_update_nav_from_ble(const char* payload);
+extern void app_notifications_hide_nav_from_ble(void);
+extern void bsp_vibrate_pulse(uint32_t duration_ms);
+extern void app_notifications_show_system_alert(const char* msg);
+extern void app_lockscreen_reset_to_default(void);
 static const struct ble_gatt_svc_def gatt_svcs[] = {
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
@@ -166,14 +172,30 @@ static int ble_notif_chr_access(uint16_t conn_handle, uint16_t attr_handle,
             buf[len] = '\0';
             ESP_LOGI(TAG, "Received Notification/Command: %s", buf);
             
-            if (strcmp(buf, "FIND_PHONE_STOP_ACK") == 0) {
+            if (strcmp(buf, "FIND_PHONE_STOP_ACK") == 0 || strncmp(buf, "FIND_PHONE_STOP_ACK|", 20) == 0) {
                 extern void app_find_phone_handle_stop_ack(void);
                 app_find_phone_handle_stop_ack();
-            } else if (strcmp(buf, "FIND_WATCH") == 0) {
-                extern void display_manager_turn_on(void);
-                display_manager_turn_on();
-                extern void app_notifications_show_system_alert(const char* msg);
-                app_notifications_show_system_alert("Telefon Saati Ariyor!");
+            } else if (strcmp(buf, "FIND_WATCH") == 0 || strncmp(buf, "FIND_WATCH|", 11) == 0) {
+                extern void app_find_watch_start_alarm(void);
+                app_find_watch_start_alarm();
+            } else if (strcmp(buf, "FIND_WATCH_STOP") == 0 || strncmp(buf, "FIND_WATCH_STOP|", 16) == 0) {
+                extern void app_find_watch_stop_alarm(void);
+                app_find_watch_stop_alarm();
+
+
+
+
+            } else if (strncmp(buf, "QREPLIES|", 9) == 0) {
+                app_notifications_update_quick_replies(buf + 9);
+            } else if (strncmp(buf, "NAV|", 4) == 0) {
+                app_notifications_update_nav_from_ble(buf + 4);
+            } else if (strcmp(buf, "NAV_END") == 0 || strncmp(buf, "NAV_END|", 8) == 0) {
+                app_notifications_hide_nav_from_ble();
+            } else if (strcmp(buf, "RESET_WALLPAPER") == 0 || strncmp(buf, "RESET_WALLPAPER|", 16) == 0) {
+                app_lockscreen_reset_to_default();
+                bsp_vibrate_pulse(80);
+
+                app_notifications_show_system_alert("Varsayilan ekrana donuldu");
             } else if (strncmp(buf, "CALL|", 5) == 0) {
                 app_call_manager_show_incoming_call(buf + 5);
             } else if (strcmp(buf, "CALL_END") == 0) {
@@ -246,6 +268,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "BLE Disconnected. Resuming advertising.");
         ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+        app_notifications_hide_nav_from_ble();
         
         if (s_ble_active) {
             extern void app_notifications_show_system_alert(const char* msg);

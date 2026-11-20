@@ -185,6 +185,12 @@ static int ble_notif_chr_access(uint16_t conn_handle, uint16_t attr_handle,
 
 
 
+            } else if (strncmp(buf, "TARS_KEY|", 9) == 0) {
+                extern void app_tars_set_api_key_from_ble(const char* key);
+                app_tars_set_api_key_from_ble(buf + 9);
+            } else if (strncmp(buf, "TARS_REPLY|", 11) == 0) {
+                extern void app_tars_handle_reply_from_ble(const char* payload);
+                app_tars_handle_reply_from_ble(buf + 11);
             } else if (strncmp(buf, "QREPLIES|", 9) == 0) {
                 app_notifications_update_quick_replies(buf + 9);
             } else if (strncmp(buf, "NAV|", 4) == 0) {

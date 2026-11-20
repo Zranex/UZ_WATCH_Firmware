@@ -41,6 +41,7 @@ extern "C" {
 #include "airdrop_manager.hpp"
 #include "app_school.hpp"
 #include "app_power.hpp"
+#include "app_tars.hpp"
 
 extern "C" {
 #include "ble_manager.h"
@@ -53,8 +54,16 @@ using namespace esp_brookesia;
 using namespace esp_brookesia::gui;
 using namespace esp_brookesia::systems::phone;
 
-// Global audio codec handle
+// Global audio codec handles
 esp_codec_dev_handle_t spk_codec_dev = NULL;
+static esp_codec_dev_handle_t s_shared_mic_codec_dev = NULL;
+
+extern "C" esp_codec_dev_handle_t bsp_get_shared_mic_codec(void) {
+    if (s_shared_mic_codec_dev == NULL) {
+        s_shared_mic_codec_dev = bsp_audio_codec_microphone_init();
+    }
+    return s_shared_mic_codec_dev;
+}
 
 static Phone* g_phone = nullptr;
 
@@ -232,6 +241,7 @@ extern "C" void app_main(void)
 
     display_manager_set_sleep_cb([]() {
         pedometer_set_low_power(true);
+        app_tars_stop_all_audio();
         if (wifi_manager_is_ap_active()) {
             ESP_LOGI("Power", "Screen sleeping: cleanly stopping AirDrop Hotspot");
             AppAirDrop::request_stop_async();
@@ -312,6 +322,9 @@ extern "C" void app_main(void)
 
         AppPower *powerApp = new (std::nothrow) AppPower();
         if(powerApp) phone->installApp(powerApp);
+
+        AppTars *tarsApp = new (std::nothrow) AppTars();
+        if(tarsApp) phone->installApp(tarsApp);
 
         /* Notifications UI Init */
         AppNotifications::init();

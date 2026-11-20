@@ -156,10 +156,16 @@ uint8_t display_manager_get_brightness(void) {
     return current_brightness;
 }
 
+extern void app_tars_on_triple_tap_wake(void) __attribute__((weak));
+
 static void display_manager_task(void *arg) {
-    ESP_LOGI(TAG, "Display manager task started (Power Optimized)");
+    ESP_LOGI(TAG, "Display manager task started (Triple-Tap Wake + Power Optimized)");
+    int tap_count = 0;
+    TickType_t first_tap_tick = 0;
+
     while (1) {
         if (display_on) {
+            tap_count = 0;
             if (s_sleep_requested) {
                 s_sleep_requested = false;
                 display_turn_off_internal();
@@ -176,19 +182,49 @@ static void display_manager_task(void *arg) {
             }
             vTaskDelay(pdMS_TO_TICKS(100));
         } else {
-            // Screen is OFF: LVGL paused. Check touch hardware pin (active LOW on touch)
+            // Screen is OFF: LVGL paused. Require 3 distinct taps within 1500ms to wake display.
             TickType_t now_tick = xTaskGetTickCount();
+            if (tap_count > 0 && ((now_tick - first_tap_tick) * portTICK_PERIOD_MS > 1500)) {
+                tap_count = 0;
+            }
+
             if (((now_tick - s_last_sleep_tick) * portTICK_PERIOD_MS > 350) && gpio_get_level(TOUCH_INT_PIN) == 0) {
-                ESP_LOGI(TAG, "Touch detected! Waking up display.");
-                // Wait briefly for touch to release so it doesn't cause stray clicks or drag animations
                 int release_wait = 0;
-                while (gpio_get_level(TOUCH_INT_PIN) == 0 && release_wait < 15) {
+                while (gpio_get_level(TOUCH_INT_PIN) == 0 && release_wait < 45) {
                     vTaskDelay(pdMS_TO_TICKS(10));
                     release_wait++;
                 }
-                display_manager_turn_on();
+
+                if (release_wait >= 45) {
+                    // Long press / sleeve resting on screen -> ignore and wait for release
+                    tap_count = 0;
+                    while (gpio_get_level(TOUCH_INT_PIN) == 0) {
+                        vTaskDelay(pdMS_TO_TICKS(50));
+                    }
+                } else {
+                    TickType_t tap_tick = xTaskGetTickCount();
+                    if (tap_count == 0 || ((tap_tick - first_tap_tick) * portTICK_PERIOD_MS > 1500)) {
+                        tap_count = 1;
+                        first_tap_tick = tap_tick;
+                    } else {
+                        tap_count++;
+                    }
+                    ESP_LOGI(TAG, "Sleep tap %d/3", tap_count);
+
+                    if (tap_count >= 3) {
+                        tap_count = 0;
+                        ESP_LOGI(TAG, "Triple-tap confirmed! Waking display + TARS 4.5s Quick-Listen.");
+                        display_manager_turn_on();
+                        if (app_tars_on_triple_tap_wake) {
+                            app_tars_on_triple_tap_wake();
+                        }
+                    } else {
+                        vTaskDelay(pdMS_TO_TICKS(25)); // Brief debounce before next tap
+                    }
+                }
+            } else {
+                vTaskDelay(pdMS_TO_TICKS(tap_count > 0 ? 20 : 70));
             }
-            vTaskDelay(pdMS_TO_TICKS(100)); // 10 Hz polling: ultra-low power standby
         }
     }
 }

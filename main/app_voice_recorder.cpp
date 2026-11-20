@@ -8,7 +8,7 @@ extern const lv_image_dsc_t icon_voice_recorder;
 
 #define TAG "VoiceRec"
 
-extern esp_codec_dev_handle_t bsp_audio_codec_microphone_init(void);
+extern "C" esp_codec_dev_handle_t bsp_get_shared_mic_codec(void);
 extern esp_codec_dev_handle_t spk_codec_dev;
 extern "C" void bsp_audio_power_amp_enable(bool enable);
 extern "C" void bsp_audio_standby(void);
@@ -108,7 +108,7 @@ bool AppVoiceRecorder::run() {
     lv_obj_align(_recordings_list, LV_ALIGN_CENTER, 0, 0);
 
     if (_mic_codec == NULL) {
-        _mic_codec = bsp_audio_codec_microphone_init();
+        _mic_codec = bsp_get_shared_mic_codec();
     }
     load_list();
     update_ui();

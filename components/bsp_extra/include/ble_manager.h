@@ -34,6 +34,18 @@ void ble_manager_set_active(bool enable);
 bool ble_manager_is_connected(void);
 
 /**
+ * @brief Temporarily pause/resume BLE radio during Wi-Fi SoftAP (AirDrop Hotspot)
+ *        without modifying the user's saved NVS BLE preference.
+ */
+void ble_manager_set_softap_pause(bool pause);
+
+/**
+ * @brief Self-healing check: if BLE should be advertising and isn't connected,
+ *        ensure advertising as "UZ WATCH" is actively running.
+ */
+void ble_manager_ensure_advertising(void);
+
+/**
  * @brief Reset Find Phone UI state when phone acknowledges stop
  */
 void app_find_phone_handle_stop_ack(void);

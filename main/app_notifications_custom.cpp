@@ -223,6 +223,7 @@ void AppNotificationsCustom::on_reply_clicked(lv_event_t* e) {
         lv_obj_set_style_bg_color(btn, is_cancel ? lv_color_hex(0x4A1C1C) : lv_color_hex(0x282832), 0);
 
         char* payload = (char*)malloc(256);
+        if (!payload) continue;
         snprintf(payload, 256, "%s|%s", notif_id, text.c_str());
         lv_obj_add_event_cb(btn, on_reply_selected, LV_EVENT_CLICKED, payload);
         lv_obj_add_event_cb(btn, on_user_data_deleted, LV_EVENT_DELETE, payload);

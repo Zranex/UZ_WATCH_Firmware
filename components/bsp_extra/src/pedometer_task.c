@@ -13,7 +13,7 @@ static qmi8658_acc_t s_latest_acc = {0};
 static volatile bool s_acc_valid = false;
 
 // Algorithm parameters
-static volatile uint32_t s_pedometer_delay_ms = 50; // 20 Hz active, 10 Hz sleep, 4 Hz still
+static volatile uint32_t s_pedometer_delay_ms = 100; // 10 Hz active (halves I2C load), 6.6 Hz sleep, 2.5 Hz still
 static volatile bool s_is_low_power = false;
 static pedometer_acc_cb_t s_acc_cb = NULL;
 
@@ -27,7 +27,7 @@ void pedometer_register_acc_callback(pedometer_acc_cb_t cb)
 void pedometer_set_low_power(bool enable)
 {
     s_is_low_power = enable;
-    s_pedometer_delay_ms = enable ? 100 : 50;
+    s_pedometer_delay_ms = enable ? 150 : 100;
 }
 
 static void pedometer_task(void *pvParameter)
@@ -70,7 +70,7 @@ static void pedometer_task(void *pvParameter)
                 }
             } else {
                 still_ticks = 0;
-                s_pedometer_delay_ms = 50;
+                s_pedometer_delay_ms = 100;
             }
 
             // Low pass filter to smooth out noise
@@ -103,7 +103,7 @@ esp_err_t pedometer_task_init(void)
         "pedometer_task",
         4096,
         NULL,
-        5, // Priority
+        2, // Priority 2 (strictly below LVGL=4, BLE=4, TARS=4 so IMU never preempts I2C touch/audio!)
         NULL,
         1  // Run on Core 1 (App Core) to not block Wi-Fi/BLE
     );

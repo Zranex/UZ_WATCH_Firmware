@@ -26,8 +26,8 @@ bool wifi_manager_is_connected(void);
 // Start scanning for Wi-Fi networks (non-blocking)
 esp_err_t wifi_manager_scan(void);
 
-#define DEFAULT_WIFI_SSID     "TurkTelekom_ZYA41B"
-#define DEFAULT_WIFI_PASSWORD "cgXy77WVzfYF"
+#define DEFAULT_WIFI_SSID     "YOUR_WIFI_SSID"
+#define DEFAULT_WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
 
 // Connect to default preconfigured network
 esp_err_t wifi_manager_connect_default(void);
@@ -65,6 +65,22 @@ esp_err_t wifi_manager_start_ap(const char* ssid, const char* password);
 
 // Check if SoftAP mode is currently active
 bool wifi_manager_is_ap_active(void);
+
+// Non-blocking async wrappers (safe to call from LVGL UI callbacks without freezing UI)
+void wifi_manager_start_async(void);
+void wifi_manager_stop_async(void);
+void wifi_manager_connect_default_async(void);
+
+// Thread-safe modem-sleep refresh for STA mode (safe to call from display wake callback)
+void wifi_manager_refresh_ps(void);
+
+// Temporarily disable Wi-Fi modem-sleep (WIFI_PS_NONE) during short low-latency API bursts
+void wifi_manager_set_turbo(bool enable);
+
+// Smart 90s Idle Auto-Off hooks (keeps Wi-Fi hot between consecutive commands, shuts off 0mA when idle in sleep!)
+void wifi_manager_mark_activity(void);
+void wifi_manager_on_screen_sleep(void);
+void wifi_manager_on_screen_wake(void);
 
 #ifdef __cplusplus
 }

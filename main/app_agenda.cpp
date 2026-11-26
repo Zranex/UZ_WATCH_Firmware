@@ -143,8 +143,9 @@ void app_agenda_update_from_ble(const char* payload) {
             strncpy(buf, payload, sizeof(buf)-1);
             buf[255] = 0;
             
-            char* id_str = strtok(buf, "|");
-            char* text = strtok(NULL, "|");
+            char* saveptr = nullptr;
+            char* id_str = strtok_r(buf, "|", &saveptr);
+            char* text = strtok_r(NULL, "|", &saveptr);
             if (id_str && text) {
                 app_agenda_add_item(atoi(id_str), text);
             }

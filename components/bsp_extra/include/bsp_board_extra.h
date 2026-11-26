@@ -24,6 +24,10 @@ void bsp_pmu_log_diagnostics(void);
 void bsp_vibrate_pulse(uint32_t duration_ms);
 esp_err_t bsp_pmu_set_amoled_power(bool enable);
 
+// Shared Audio Codec/I2S Bus Mutex (prevents TARS/Music/Recorder/Alarm/SchoolBell codec races)
+bool bsp_audio_lock(uint32_t timeout_ms);
+void bsp_audio_unlock(void);
+
 #ifdef __cplusplus
 }
 #endif

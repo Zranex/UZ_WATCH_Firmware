@@ -1,4 +1,5 @@
 #include "app_local_music.hpp"
+#include "bsp_board_extra.h"
 extern const lv_image_dsc_t icon_local_music;
 #include "esp_lib_utils.h"
 #include "bsp/esp32_s3_touch_amoled_2_06.h"
@@ -54,6 +55,7 @@ void AppLocalMusic::release_audio_for_alarm() {
 
 void AppLocalMusic::reload_playlist_external() {
     if (bsp_display_lock(100)) {
+        std::lock_guard<std::recursive_mutex> lk(_playlist_mutex);
         load_playlist();
         if (!_is_app_closed && !_is_playing && _status_label) {
             if (_playlist.empty()) {
@@ -67,23 +69,30 @@ void AppLocalMusic::reload_playlist_external() {
 }
 
 void AppLocalMusic::play_song_by_name(const char* name) {
-    load_playlist();
-    for (size_t i = 0; i < _playlist.size(); i++) {
-        if (_playlist[i].find(name) != std::string::npos) {
-            _current_song_index = (int)i;
-            _song_changed = true;
-            _is_playing = true;
-            _is_app_closed = false;
-
-            if (_audio_task_handle == NULL) {
-                xTaskCreate(audio_task, "local_audio_task", 4096, this, 4, &_audio_task_handle);
+    if (!name) return;
+    bool found = false;
+    {
+        std::lock_guard<std::recursive_mutex> lk(_playlist_mutex);
+        load_playlist();
+        for (size_t i = 0; i < _playlist.size(); i++) {
+            if (_playlist[i].find(name) != std::string::npos) {
+                _current_song_index = (int)i;
+                _song_changed = true;
+                _is_playing = true;
+                _is_app_closed = false;
+                found = true;
+                break;
             }
+        }
+    }
+    if (found) {
+        if (_audio_task_handle == NULL) {
+            xTaskCreate(audio_task, "local_audio_task", 4096, this, 4, &_audio_task_handle);
+        }
 
-            if (bsp_display_lock(100)) {
-                update_play_button_text();
-                bsp_display_unlock();
-            }
-            return;
+        if (bsp_display_lock(100)) {
+            update_play_button_text();
+            bsp_display_unlock();
         }
     }
 }
@@ -123,6 +132,7 @@ static bool has_wav_ext(const std::string& name) {
 }
 
 void AppLocalMusic::load_playlist() {
+    std::lock_guard<std::recursive_mutex> lk(_playlist_mutex);
     _playlist.clear();
     const char* dirs[] = {
         BSP_SD_MOUNT_POINT "/musics",
@@ -344,19 +354,25 @@ void AppLocalMusic::update_volume(int change) {
 }
 
 void AppLocalMusic::play_next() {
-    if (_playlist.empty()) load_playlist();
-    if (_playlist.empty()) return;
-    _current_song_index = (_current_song_index + 1) % (int)_playlist.size();
+    {
+        std::lock_guard<std::recursive_mutex> lk(_playlist_mutex);
+        if (_playlist.empty()) load_playlist();
+        if (_playlist.empty()) return;
+        _current_song_index = (_current_song_index + 1) % (int)_playlist.size();
+    }
     _song_changed = true;
     _is_playing = true;
     update_play_button_text();
 }
 
 void AppLocalMusic::play_prev() {
-    if (_playlist.empty()) load_playlist();
-    if (_playlist.empty()) return;
-    _current_song_index--;
-    if (_current_song_index < 0) _current_song_index = (int)_playlist.size() - 1;
+    {
+        std::lock_guard<std::recursive_mutex> lk(_playlist_mutex);
+        if (_playlist.empty()) load_playlist();
+        if (_playlist.empty()) return;
+        _current_song_index--;
+        if (_current_song_index < 0) _current_song_index = (int)_playlist.size() - 1;
+    }
     _song_changed = true;
     _is_playing = true;
     update_play_button_text();
@@ -369,12 +385,8 @@ bool AppLocalMusic::back() {
 bool AppLocalMusic::close() {
     stop_playback();
     _is_app_closed = true;
-
-    int wait_count = 0;
-    while (_audio_task_handle != NULL && wait_count < 100) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-        wait_count++;
-    }
+    // NEVER spin-wait inside taskLVGL while holding lvgl_port_lock() — audio_task sees
+    // _is_app_closed=true and releases file/codec/PA asynchronously without deadlocking!
 
     if (_bg_obj != nullptr) {
         lv_obj_delete_async(_bg_obj);
@@ -458,6 +470,7 @@ void AppLocalMusic::audio_task(void *pvParameter) {
     }
 
     bool pa_enabled = false;
+    bool audio_locked = false;
 
     while (!app->_is_app_closed) {
         if (app->_release_codec_requested) {
@@ -474,6 +487,11 @@ void AppLocalMusic::audio_task(void *pvParameter) {
                 esp_codec_dev_close(spk_codec_dev);
                 codec_opened = false;
                 app->_codec_currently_open = false;
+            }
+            if (audio_locked) {
+                bsp_audio_standby();
+                bsp_audio_unlock();
+                audio_locked = false;
             }
         }
 
@@ -493,13 +511,23 @@ void AppLocalMusic::audio_task(void *pvParameter) {
                 codec_opened = false;
                 app->_codec_currently_open = false;
             }
-
-            if (app->_playlist.empty()) {
-                app->_is_playing = false;
-                continue;
+            if (audio_locked) {
+                bsp_audio_unlock();
+                audio_locked = false;
             }
 
-            std::string filepath = app->_playlist[app->_current_song_index];
+            std::string filepath;
+            {
+                std::lock_guard<std::recursive_mutex> lk(app->_playlist_mutex);
+                if (app->_playlist.empty()) {
+                    app->_is_playing = false;
+                    continue;
+                }
+                if (app->_current_song_index < 0 || app->_current_song_index >= (int)app->_playlist.size()) {
+                    app->_current_song_index = 0;
+                }
+                filepath = app->_playlist[app->_current_song_index];
+            }
             f = fopen(filepath.c_str(), "rb");
             if (f != NULL) {
                 char riff[4];
@@ -547,18 +575,24 @@ void AppLocalMusic::audio_task(void *pvParameter) {
                             .sample_rate = sample_rate,
                             .mclk_multiple = 256,
                         };
-                        if (esp_codec_dev_open(spk_codec_dev, &fs) == ESP_OK) {
-                            codec_opened = true;
-                            app->_codec_currently_open = true;
-                            esp_codec_dev_set_out_vol(spk_codec_dev, app->_volume);
+                        if (bsp_audio_lock(400)) {
+                            audio_locked = true;
+                            if (esp_codec_dev_open(spk_codec_dev, &fs) == ESP_OK) {
+                                codec_opened = true;
+                                app->_codec_currently_open = true;
+                                esp_codec_dev_set_out_vol(spk_codec_dev, app->_volume);
 
-                            if (bsp_display_lock(50)) {
-                                if (!app->_is_app_closed && app->_status_label) {
-                                    size_t slash = filepath.find_last_of('/');
-                                    std::string short_name = (slash != std::string::npos) ? filepath.substr(slash + 1) : filepath;
-                                    lv_label_set_text_fmt(app->_status_label, "%s", short_name.c_str());
+                                if (!app->_is_app_closed && bsp_display_lock(50)) {
+                                    if (!app->_is_app_closed && app->_status_label) {
+                                        size_t slash = filepath.find_last_of('/');
+                                        std::string short_name = (slash != std::string::npos) ? filepath.substr(slash + 1) : filepath;
+                                        lv_label_set_text_fmt(app->_status_label, "%s", short_name.c_str());
+                                    }
+                                    bsp_display_unlock();
                                 }
-                                bsp_display_unlock();
+                            } else {
+                                bsp_audio_unlock();
+                                audio_locked = false;
                             }
                         }
                     } else {
@@ -568,7 +602,7 @@ void AppLocalMusic::audio_task(void *pvParameter) {
                     ESP_UTILS_LOGE("Not a valid RIFF/WAVE file: %s", filepath.c_str());
                 }
             } else {
-                if (bsp_display_lock(50)) {
+                if (!app->_is_app_closed && bsp_display_lock(50)) {
                     app->_is_playing = false;
                     app->update_play_button_text();
                     if (!app->_is_app_closed && app->_status_label) lv_label_set_text(app->_status_label, "Dosya acilamadi");
@@ -577,7 +611,7 @@ void AppLocalMusic::audio_task(void *pvParameter) {
             }
         }
 
-        if (app->_is_playing && f && codec_opened && spk_codec_dev) {
+        if (app->_is_playing && !app->_is_app_closed && f && codec_opened && spk_codec_dev) {
             if (!pa_enabled) {
                 bsp_audio_power_amp_enable(true);
                 pa_enabled = true;
@@ -592,11 +626,17 @@ void AppLocalMusic::audio_task(void *pvParameter) {
                     bsp_audio_power_amp_enable(false);
                     pa_enabled = false;
                 }
-                if (app->_playlist.size() > 1) {
-                    app->_current_song_index = (app->_current_song_index + 1) % (int)app->_playlist.size();
-                    app->_song_changed = true;
-                } else {
-                    if (bsp_display_lock(50)) {
+                size_t pl_sz = 0;
+                {
+                    std::lock_guard<std::recursive_mutex> lk(app->_playlist_mutex);
+                    pl_sz = app->_playlist.size();
+                    if (pl_sz > 1) {
+                        app->_current_song_index = (app->_current_song_index + 1) % (int)pl_sz;
+                        app->_song_changed = true;
+                    }
+                }
+                if (pl_sz <= 1) {
+                    if (!app->_is_app_closed && bsp_display_lock(50)) {
                         app->_is_playing = false;
                         app->update_play_button_text();
                         if (!app->_is_app_closed && app->_status_label) lv_label_set_text(app->_status_label, "Bitti");
@@ -618,6 +658,9 @@ void AppLocalMusic::audio_task(void *pvParameter) {
     app->_codec_currently_open = false;
     bsp_audio_power_amp_enable(false);
     bsp_audio_standby();
+    if (audio_locked) {
+        bsp_audio_unlock();
+    }
     if (buf) free(buf);
 
     app->_audio_task_handle = NULL;

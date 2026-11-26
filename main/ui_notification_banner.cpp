@@ -70,22 +70,38 @@ void AppNotifications::update_quick_replies(const char* payload) {
     char* saveptr = nullptr;
     char* token = strtok_r(buf, "|", &saveptr);
     int idx = 0;
-
-    nvs_handle_t nvs_h;
-    bool nvs_ok = (nvs_open("settings", NVS_READWRITE, &nvs_h) == ESP_OK);
+    bool any_changed = false;
+    std::string incoming[QUICK_REPLY_COUNT];
+    bool has_val[QUICK_REPLY_COUNT] = {false};
 
     while (token != nullptr && idx < QUICK_REPLY_COUNT) {
         if (strlen(token) > 0) {
-            s_quick_replies[idx] = token;
-            if (nvs_ok) {
-                char key[16];
-                snprintf(key, sizeof(key), "qr_%d", idx);
-                nvs_set_str(nvs_h, key, token);
+            incoming[idx] = token;
+            has_val[idx] = true;
+            if (s_quick_replies[idx] != incoming[idx]) {
+                any_changed = true;
             }
-            ESP_LOGI(TAG, "Updated Quick Reply [%d]: %s", idx, token);
         }
         idx++;
         token = strtok_r(nullptr, "|", &saveptr);
+    }
+
+    if (!any_changed) {
+        return; // Identical quick replies -> skip NVS commit & dual-core SPI flash stall!
+    }
+
+    nvs_handle_t nvs_h;
+    bool nvs_ok = (nvs_open("settings", NVS_READWRITE, &nvs_h) == ESP_OK);
+    for (int i = 0; i < QUICK_REPLY_COUNT; i++) {
+        if (has_val[i]) {
+            s_quick_replies[i] = incoming[i];
+            if (nvs_ok) {
+                char key[16];
+                snprintf(key, sizeof(key), "qr_%d", i);
+                nvs_set_str(nvs_h, key, incoming[i].c_str());
+            }
+            ESP_LOGI(TAG, "Updated Quick Reply [%d]: %s", i, incoming[i].c_str());
+        }
     }
 
     if (nvs_ok) {
@@ -360,7 +376,8 @@ void AppNotifications::on_banner_reply_clicked(lv_event_t* e) {
 
     if (hide_timer) lv_timer_pause(hide_timer);
 
-    lv_obj_t* mbox = lv_obj_create(lv_scr_act());
+    // Create on lv_layer_top() so quick-reply popup NEVER disappears behind lockscreen or active app close!
+    lv_obj_t* mbox = lv_obj_create(lv_layer_top());
     lv_obj_set_size(mbox, LV_PCT(90), LV_PCT(82));
     lv_obj_center(mbox);
     lv_obj_set_style_bg_color(mbox, lv_color_hex(0x141418), 0);
@@ -390,6 +407,7 @@ void AppNotifications::on_banner_reply_clicked(lv_event_t* e) {
         lv_obj_set_style_bg_color(btn, is_cancel ? lv_color_hex(0x4A1C1C) : lv_color_hex(0x282832), 0);
 
         char* payload = (char*)malloc(256);
+        if (!payload) continue;
         snprintf(payload, 256, "%s|%s", current_banner_notif_id.c_str(), text.c_str());
         lv_obj_add_event_cb(btn, on_banner_reply_selected, LV_EVENT_CLICKED, payload);
         lv_obj_add_event_cb(btn, on_banner_user_data_deleted, LV_EVENT_DELETE, payload);

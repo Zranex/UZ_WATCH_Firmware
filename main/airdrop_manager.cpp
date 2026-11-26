@@ -219,11 +219,12 @@ static esp_err_t upload_post_handler(httpd_req_t *req) {
         }
     }
 
-    char *chunk = (char *)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    int chunk_size = 8192;
+    char *chunk = (char *)heap_caps_malloc(chunk_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!chunk) {
-        chunk = (char *)malloc(4096);
+        chunk_size = 4096;
+        chunk = (char *)malloc(chunk_size);
     }
-    int chunk_size = chunk ? 8192 : 4096;
     if (!chunk) {
         fclose(fd);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Yetersiz RAM");
@@ -683,9 +684,12 @@ static esp_err_t view_get_handler(httpd_req_t *req) {
     }
 
     int64_t remaining = end - start + 1;
-    char *chunk = (char *)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!chunk) chunk = (char *)malloc(4096);
-    int chunk_size = chunk ? 8192 : 4096;
+    int chunk_size = 8192;
+    char *chunk = (char *)heap_caps_malloc(chunk_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!chunk) {
+        chunk_size = 4096;
+        chunk = (char *)malloc(chunk_size);
+    }
 
     if (!chunk) {
         fclose(fd);
@@ -913,7 +917,7 @@ esp_err_t AirDropManager::start_server() {
     config.max_open_sockets = 3;
     config.lru_purge_enable = true;
     config.max_uri_handlers = 12;
-    config.stack_size = 6144;
+    config.stack_size = 8192;
     config.recv_wait_timeout = 15;
     config.send_wait_timeout = 15;
 

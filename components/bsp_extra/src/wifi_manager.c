@@ -1,4 +1,5 @@
 #include "wifi_manager.h"
+#include "ble_manager.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
 #include "esp_event.h"
@@ -7,11 +8,14 @@
 #include "esp_netif.h"
 #include "esp_sntp.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "freertos/queue.h"
 #include "rtc_lib.h"
 #include <string.h>
+#include <stdint.h>
 
 static const char *TAG = "WifiManager";
 
@@ -28,9 +32,77 @@ static volatile bool ap_active = false;
 static esp_event_handler_instance_t instance_any_id = NULL;
 static esp_event_handler_instance_t instance_got_ip = NULL;
 static int s_retry_count = 0;
-static TaskHandle_t s_wifi_wdog_task = NULL;
-static TaskHandle_t s_autostop_task = NULL;
+static volatile uint32_t s_wifi_session_id = 0;
 static SemaphoreHandle_t s_wifi_mutex = NULL;
+
+typedef enum {
+    WIFI_ASYNC_START = 1,
+    WIFI_ASYNC_STOP = 2,
+    WIFI_ASYNC_CONNECT_DEFAULT = 3,
+} wifi_async_cmd_t;
+
+static QueueHandle_t s_wifi_async_queue = NULL;
+static TaskHandle_t s_wifi_async_task = NULL;
+static esp_timer_handle_t s_idle_off_timer = NULL;
+static volatile bool s_screen_sleeping = false;
+static volatile int64_t s_last_activity_us = 0;
+
+#define WIFI_IDLE_SLEEP_TIMEOUT_US (90ULL * 1000000ULL) // 90 seconds after screen sleep -> auto-stop STA (0 mA!)
+
+static void wifi_idle_off_timer_cb(void* arg) {
+    if (!wifi_active || ap_active || !s_screen_sleeping) return;
+    int64_t idle_us = esp_timer_get_time() - s_last_activity_us;
+    if (idle_us >= (int64_t)WIFI_IDLE_SLEEP_TIMEOUT_US - 2000000LL) {
+        ESP_LOGI(TAG, "Smart Power: Wi-Fi STA idle 90s while screen sleeping -> auto-stopping radio (0 mA)!");
+        wifi_manager_stop_async();
+    } else {
+        uint64_t rem_us = WIFI_IDLE_SLEEP_TIMEOUT_US - (uint64_t)idle_us;
+        (void)esp_timer_start_once(s_idle_off_timer, rem_us);
+    }
+}
+
+static void ensure_idle_timer(void) {
+    if (s_idle_off_timer == NULL) {
+        esp_timer_create_args_t args = {
+            .callback = wifi_idle_off_timer_cb,
+            .arg = NULL,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "wifi_idle_off",
+            .skip_unhandled_events = true,
+        };
+        (void)esp_timer_create(&args, &s_idle_off_timer);
+    }
+}
+
+void wifi_manager_mark_activity(void) {
+    s_last_activity_us = esp_timer_get_time();
+    if (s_idle_off_timer && s_screen_sleeping && wifi_active && !ap_active) {
+        esp_timer_stop(s_idle_off_timer);
+        (void)esp_timer_start_once(s_idle_off_timer, WIFI_IDLE_SLEEP_TIMEOUT_US);
+    }
+}
+
+void wifi_manager_on_screen_sleep(void) {
+    s_screen_sleeping = true;
+    s_last_activity_us = esp_timer_get_time();
+    if (wifi_active && !ap_active) {
+        ensure_idle_timer();
+        if (s_idle_off_timer) {
+            esp_timer_stop(s_idle_off_timer);
+            (void)esp_timer_start_once(s_idle_off_timer, WIFI_IDLE_SLEEP_TIMEOUT_US);
+            ESP_LOGI(TAG, "Smart Power: Wi-Fi STA will stay warm for 90s then auto-stop if unused.");
+        }
+    }
+}
+
+void wifi_manager_on_screen_wake(void) {
+    s_screen_sleeping = false;
+    s_last_activity_us = esp_timer_get_time();
+    if (s_idle_off_timer) {
+        esp_timer_stop(s_idle_off_timer);
+    }
+    wifi_manager_refresh_ps();
+}
 
 static void ensure_wifi_mutex(void) {
     if (s_wifi_mutex == NULL) {
@@ -65,37 +137,24 @@ static void time_sync_notification_cb(struct timeval *tv)
              timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
 }
 
-static void wifi_auto_stop_task(void* arg) {
-    vTaskDelay(pdMS_TO_TICKS(200));
-    s_autostop_task = NULL;
-    if (!ap_active) {
-        ESP_LOGW(TAG, "Wi-Fi disconnected/unreachable -> Auto-stopping Wi-Fi radio to preserve battery!");
-        wifi_manager_stop();
-    }
-    vTaskDelete(NULL);
-}
-
-static void trigger_wifi_auto_stop(void) {
-    if (ap_active || s_autostop_task != NULL) return;
-    xTaskCreate(wifi_auto_stop_task, "wifi_autostop", 4096, NULL, 3, &s_autostop_task);
+static void trigger_wifi_auto_stop(uint32_t session_id) {
+    (void)session_id;
+    if (ap_active) return;
+    // Reuse existing wifi_async worker instead of spawning a new 4KB task from sys_evt!
+    wifi_manager_stop_async();
 }
 
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
-                                    int32_t event_id, void* event_data)
+                               int32_t event_id, void* event_data)
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        if (ap_active) {
-            // In SoftAP (APSTA) mode, STA interface is kept idle for BLE+Wi-Fi modem sleep coexistence
-            return;
-        }
+        if (ap_active || !wifi_active) return;
         ESP_LOGI(TAG, "Wi-Fi started (STA_START) -> Auto-connecting to %s...", DEFAULT_WIFI_SSID);
         current_state = WIFI_STATE_CONNECTING;
         s_retry_count = 0;
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (ap_active) {
-            return;
-        }
+        if (ap_active || !wifi_active) return;
         wifi_event_sta_disconnected_t* disc = (wifi_event_sta_disconnected_t*)event_data;
         ESP_LOGW(TAG, "Wi-Fi disconnected (reason: %d)", disc ? disc->reason : -1);
         if (s_retry_count < 2) {
@@ -107,21 +166,20 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
             s_retry_count = 0;
             current_state = WIFI_STATE_FAILED;
             ESP_LOGW(TAG, "Wi-Fi AP unreachable after 2 attempts. Auto-stopping Wi-Fi to save battery!");
-            trigger_wifi_auto_stop();
+            trigger_wifi_auto_stop(s_wifi_session_id);
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
-        if (ap_active) return;
+        if (ap_active || !wifi_active) return;
         ESP_LOGI(TAG, "[WIFI] STA_CONNECTED to %s", DEFAULT_WIFI_SSID);
         current_state = WIFI_STATE_CONNECTED;
         s_retry_count = 0;
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        if (ap_active) return;
+        if (ap_active || !wifi_active) return;
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI(TAG, "[IP] GOT_IP: " IPSTR, IP2STR(&event->ip_info.ip));
         current_state = WIFI_STATE_GOT_IP;
         wifi_print_telemetry("GOT_IP");
 
-        // Sync time via SNTP
         if (!esp_sntp_enabled()) {
             esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
             esp_sntp_setservername(0, "pool.ntp.org");
@@ -131,9 +189,10 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_SCAN_DONE) {
         uint16_t number = MAX_SCAN_NETWORKS;
-        esp_wifi_scan_get_ap_records(&number, ap_info);
-        ap_count = number;
-        ESP_LOGI(TAG, "Scan completed, found %d networks", ap_count);
+        if (esp_wifi_scan_get_ap_records(&number, ap_info) == ESP_OK) {
+            ap_count = number;
+            ESP_LOGI(TAG, "Scan completed, found %d networks", ap_count);
+        }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STACONNECTED) {
         ESP_LOGI(TAG, "Phone connected to Watch SoftAP Hotspot!");
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STADISCONNECTED) {
@@ -141,7 +200,6 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
     }
 }
 
-// Pre-init: only NVS + timezone (called at boot, NO WiFi hardware)
 esp_err_t wifi_manager_pre_init(void)
 {
     ensure_wifi_mutex();
@@ -158,7 +216,6 @@ esp_err_t wifi_manager_pre_init(void)
         nvs_initialized = true;
     }
 
-    // Set timezone (Turkey UTC+3)
     setenv("TZ", "TRT-3", 1);
     tzset();
 
@@ -173,21 +230,16 @@ esp_err_t wifi_manager_pre_init(void)
 }
 
 static void wifi_connect_watchdog_task(void* pv) {
-    for (int i = 0; i < 30; i++) {
-        vTaskDelay(pdMS_TO_TICKS(500));
-        if (!wifi_active || ap_active) {
-            s_wifi_wdog_task = NULL;
-            vTaskDelete(NULL);
-            return;
-        }
-        if (current_state == WIFI_STATE_GOT_IP) {
-            s_wifi_wdog_task = NULL;
+    uint32_t my_session = (uint32_t)(uintptr_t)pv;
+    for (int i = 0; i < 60; i++) {
+        vTaskDelay(pdMS_TO_TICKS(250));
+        if (s_wifi_session_id != my_session || !wifi_active || ap_active || current_state == WIFI_STATE_GOT_IP) {
             vTaskDelete(NULL);
             return;
         }
     }
-    s_wifi_wdog_task = NULL;
-    if (wifi_active && !ap_active && current_state != WIFI_STATE_GOT_IP && current_state != WIFI_STATE_CONNECTED) {
+    if (s_wifi_session_id == my_session && wifi_active && !ap_active &&
+        current_state != WIFI_STATE_GOT_IP && current_state != WIFI_STATE_CONNECTED) {
         ESP_LOGW(TAG, "Wi-Fi watchdog timeout (15s) -> Shutting down Wi-Fi radio to preserve battery!");
         wifi_manager_stop();
     }
@@ -211,7 +263,6 @@ static esp_err_t ensure_netif_and_loop(void) {
     return ESP_OK;
 }
 
-// Full WiFi STA start — called on-demand
 esp_err_t wifi_manager_start(void)
 {
     ensure_wifi_mutex();
@@ -226,6 +277,7 @@ esp_err_t wifi_manager_start(void)
         wifi_manager_stop();
     }
 
+    uint32_t session_id = ++s_wifi_session_id;
     current_state = WIFI_STATE_INIT;
     wifi_print_telemetry("STA_INIT");
 
@@ -250,7 +302,6 @@ esp_err_t wifi_manager_start(void)
     cfg.static_rx_buf_num = 6;
     cfg.dynamic_rx_buf_num = 12;
     cfg.static_tx_buf_num = 8;
-    cfg.rx_ba_win = 6;
 
     err = esp_wifi_init(&cfg);
     if (err != ESP_OK) {
@@ -282,6 +333,8 @@ esp_err_t wifi_manager_start(void)
                                                   &instance_got_ip);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Event register IP_EVENT failed: %s", esp_err_to_name(err));
+            esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, instance_any_id);
+            instance_any_id = NULL;
             esp_wifi_deinit();
             current_state = WIFI_STATE_FAILED;
             xSemaphoreGiveRecursive(s_wifi_mutex);
@@ -301,7 +354,6 @@ esp_err_t wifi_manager_start(void)
         return err;
     }
 
-    // Pre-load default Wi-Fi network credentials
     wifi_config_t wifi_config = {0};
     strncpy((char *)wifi_config.sta.ssid, DEFAULT_WIFI_SSID, sizeof(wifi_config.sta.ssid) - 1);
     strncpy((char *)wifi_config.sta.password, DEFAULT_WIFI_PASSWORD, sizeof(wifi_config.sta.password) - 1);
@@ -319,14 +371,18 @@ esp_err_t wifi_manager_start(void)
     // Cap Max TX power to 13 dBm (52 in 0.25 dBm units) to eliminate brownouts
     esp_wifi_set_max_tx_power(52);
 
-    // Enable Modem-Sleep power saving (required for BLE + Wi-Fi coexistence)
+    // Enable Modem-Sleep power saving (required for BLE + Wi-Fi STA coexistence)
     (void)esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-
-    if (s_wifi_wdog_task != NULL && s_wifi_wdog_task != xTaskGetCurrentTaskHandle()) {
-        vTaskDelete(s_wifi_wdog_task);
-        s_wifi_wdog_task = NULL;
+    s_last_activity_us = esp_timer_get_time();
+    if (s_screen_sleeping) {
+        ensure_idle_timer();
+        if (s_idle_off_timer) {
+            esp_timer_stop(s_idle_off_timer);
+            (void)esp_timer_start_once(s_idle_off_timer, WIFI_IDLE_SLEEP_TIMEOUT_US);
+        }
     }
-    xTaskCreate(wifi_connect_watchdog_task, "wifi_wdog", 4096, NULL, 3, &s_wifi_wdog_task);
+
+    xTaskCreate(wifi_connect_watchdog_task, "wifi_wdog", 3072, (void*)(uintptr_t)session_id, 3, NULL);
 
     ESP_LOGI(TAG, "WiFi STA started & default AP (%s) configured", DEFAULT_WIFI_SSID);
     xSemaphoreGiveRecursive(s_wifi_mutex);
@@ -338,6 +394,11 @@ esp_err_t wifi_manager_stop(void)
     ensure_wifi_mutex();
     xSemaphoreTakeRecursive(s_wifi_mutex, portMAX_DELAY);
 
+    s_wifi_session_id++; // Cooperatively cancels any running watchdog/autostop without unsafe vTaskDelete!
+    if (s_idle_off_timer) {
+        esp_timer_stop(s_idle_off_timer);
+    }
+
     if (!wifi_active) {
         xSemaphoreGiveRecursive(s_wifi_mutex);
         return ESP_OK;
@@ -345,16 +406,6 @@ esp_err_t wifi_manager_stop(void)
     wifi_active = false;
     bool was_ap = ap_active;
     ap_active = false;
-
-    TaskHandle_t self = xTaskGetCurrentTaskHandle();
-    if (s_wifi_wdog_task != NULL && s_wifi_wdog_task != self) {
-        vTaskDelete(s_wifi_wdog_task);
-        s_wifi_wdog_task = NULL;
-    }
-    if (s_autostop_task != NULL && s_autostop_task != self) {
-        vTaskDelete(s_autostop_task);
-        s_autostop_task = NULL;
-    }
 
     if (esp_sntp_enabled()) {
         esp_sntp_stop();
@@ -366,6 +417,9 @@ esp_err_t wifi_manager_stop(void)
     }
     (void)esp_wifi_stop();
 
+    // Allow LwIP & Wi-Fi driver tasks to flush queued frames cleanly before deinit
+    vTaskDelay(pdMS_TO_TICKS(60));
+
     if (instance_any_id) {
         esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, instance_any_id);
         instance_any_id = NULL;
@@ -374,6 +428,9 @@ esp_err_t wifi_manager_stop(void)
         esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, instance_got_ip);
         instance_got_ip = NULL;
     }
+
+    // CRITICAL ESP-IDF ORDER: deinit Wi-Fi driver BEFORE destroying default netifs!
+    (void)esp_wifi_deinit();
 
     if (sta_netif != NULL) {
         esp_netif_destroy_default_wifi(sta_netif);
@@ -384,13 +441,37 @@ esp_err_t wifi_manager_stop(void)
         ap_netif = NULL;
     }
 
-    (void)esp_wifi_deinit();
-
     current_state = WIFI_STATE_OFF;
     ap_count = 0;
-    ESP_LOGI(TAG, "WiFi hardware stopped and memory freed");
+    ESP_LOGI(TAG, "WiFi hardware stopped and memory freed cleanly");
+    wifi_print_telemetry("STOPPED");
     xSemaphoreGiveRecursive(s_wifi_mutex);
+    ble_manager_ensure_advertising();
     return ESP_OK;
+}
+
+void wifi_manager_refresh_ps(void)
+{
+    ensure_wifi_mutex();
+    if (xSemaphoreTakeRecursive(s_wifi_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        if (wifi_active && !ap_active) {
+            (void)esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+        }
+        xSemaphoreGiveRecursive(s_wifi_mutex);
+    }
+}
+
+void wifi_manager_set_turbo(bool enable)
+{
+    ensure_wifi_mutex();
+    if (xSemaphoreTakeRecursive(s_wifi_mutex, pdMS_TO_TICKS(150)) == pdTRUE) {
+        if (wifi_active && !ap_active) {
+            // ESP-IDF RF Coexistence rule: WIFI_PS_NONE is forbidden while BLE is active!
+            wifi_ps_type_t target = (enable && !ble_manager_is_active()) ? WIFI_PS_NONE : WIFI_PS_MIN_MODEM;
+            (void)esp_wifi_set_ps(target);
+        }
+        xSemaphoreGiveRecursive(s_wifi_mutex);
+    }
 }
 
 bool wifi_manager_is_active(void)
@@ -405,7 +486,7 @@ int wifi_manager_get_ap_count(void)
 
 esp_err_t wifi_manager_scan(void)
 {
-    if (!wifi_active) return ESP_ERR_WIFI_NOT_STARTED;
+    if (!wifi_active || ap_active) return ESP_ERR_WIFI_NOT_STARTED;
 
     wifi_scan_config_t scan_cfg = {
         .ssid = NULL,
@@ -445,28 +526,33 @@ typedef struct {
 
 static void wifi_connect_task_func(void* pvParam) {
     conn_args_t* a = (conn_args_t*)pvParam;
-    wifi_config_t wifi_config = {0};
-    strncpy((char *)wifi_config.sta.ssid, a->ssid, sizeof(wifi_config.sta.ssid) - 1);
-    if (strlen(a->password) > 0) {
-        strncpy((char *)wifi_config.sta.password, a->password, sizeof(wifi_config.sta.password) - 1);
-        wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
-    } else {
-        wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
-    }
+    ensure_wifi_mutex();
+    xSemaphoreTakeRecursive(s_wifi_mutex, portMAX_DELAY);
+    if (wifi_active && !ap_active) {
+        wifi_config_t wifi_config = {0};
+        strncpy((char *)wifi_config.sta.ssid, a->ssid, sizeof(wifi_config.sta.ssid) - 1);
+        if (strlen(a->password) > 0) {
+            strncpy((char *)wifi_config.sta.password, a->password, sizeof(wifi_config.sta.password) - 1);
+            wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+        } else {
+            wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
+        }
 
-    esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
-    ESP_LOGI(TAG, "esp_wifi_set_config -> %s", esp_err_to_name(err));
-    if (err == ESP_OK) {
-        err = esp_wifi_connect();
-        ESP_LOGI(TAG, "esp_wifi_connect -> %s", esp_err_to_name(err));
+        esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+        ESP_LOGI(TAG, "esp_wifi_set_config -> %s", esp_err_to_name(err));
+        if (err == ESP_OK) {
+            err = esp_wifi_connect();
+            ESP_LOGI(TAG, "esp_wifi_connect -> %s", esp_err_to_name(err));
+        }
     }
+    xSemaphoreGiveRecursive(s_wifi_mutex);
     free(a);
     vTaskDelete(NULL);
 }
 
 esp_err_t wifi_manager_connect(const char* ssid, const char* password)
 {
-    if (!wifi_active) return ESP_ERR_WIFI_NOT_STARTED;
+    if (!wifi_active || ap_active) return ESP_ERR_WIFI_NOT_STARTED;
 
     current_state = WIFI_STATE_CONNECTING;
     wifi_print_telemetry("START / CONNECTING");
@@ -483,13 +569,12 @@ esp_err_t wifi_manager_connect(const char* ssid, const char* password)
     }
 
     xTaskCreate(wifi_connect_task_func, "wifi_connect", 4096, args, 5, NULL);
-
     return ESP_OK;
 }
 
 bool wifi_manager_is_connected(void)
 {
-    return (!ap_active && current_state == WIFI_STATE_GOT_IP);
+    return (wifi_active && !ap_active && current_state == WIFI_STATE_GOT_IP);
 }
 
 void wifi_manager_get_ip(char* buf)
@@ -503,7 +588,7 @@ void wifi_manager_get_ip(char* buf)
             return;
         }
     }
-    if (current_state == WIFI_STATE_GOT_IP && sta_netif != NULL) {
+    if (wifi_active && current_state == WIFI_STATE_GOT_IP && sta_netif != NULL) {
         esp_netif_ip_info_t ip_info;
         if (esp_netif_get_ip_info(sta_netif, &ip_info) == ESP_OK) {
             sprintf(buf, IPSTR, IP2STR(&ip_info.ip));
@@ -572,6 +657,8 @@ esp_err_t wifi_manager_start_ap(const char* ssid, const char* password)
     if (wifi_active) {
         wifi_manager_stop();
     }
+    s_wifi_session_id++;
+
     if (!nvs_initialized) {
         wifi_manager_pre_init();
     }
@@ -595,7 +682,6 @@ esp_err_t wifi_manager_start_ap(const char* ssid, const char* password)
     cfg.static_rx_buf_num = 6;
     cfg.dynamic_rx_buf_num = 12;
     cfg.static_tx_buf_num = 8;
-    cfg.rx_ba_win = 6;
 
     err = esp_wifi_init(&cfg);
     if (err != ESP_OK) {
@@ -620,7 +706,6 @@ esp_err_t wifi_manager_start_ap(const char* ssid, const char* password)
         }
     }
 
-    // Mark AP active BEFORE esp_wifi_start() so WIFI_EVENT_STA_START does not trigger auto-connect
     ap_active = true;
     wifi_active = true;
     current_state = WIFI_STATE_INIT;
@@ -671,12 +756,6 @@ esp_err_t wifi_manager_start_ap(const char* ssid, const char* password)
     // Cap max TX power to 13 dBm for AMOLED & battery protection
     esp_wifi_set_max_tx_power(52);
 
-    // Enable modem sleep time-slicing so NimBLE + SoftAP share the 2.4 GHz radio smoothly
-    esp_err_t ps_err = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-    if (ps_err != ESP_OK) {
-        ESP_LOGW(TAG, "SoftAP set_ps(MIN_MODEM) note: %s", esp_err_to_name(ps_err));
-    }
-
     current_state = WIFI_STATE_GOT_IP;
     wifi_print_telemetry("AP_STARTED");
 
@@ -689,4 +768,52 @@ esp_err_t wifi_manager_start_ap(const char* ssid, const char* password)
 bool wifi_manager_is_ap_active(void)
 {
     return ap_active;
+}
+
+static void wifi_async_worker_loop(void* arg) {
+    wifi_async_cmd_t cmd;
+    while (1) {
+        if (xQueueReceive(s_wifi_async_queue, &cmd, portMAX_DELAY) == pdTRUE) {
+            if (cmd == WIFI_ASYNC_START) {
+                wifi_manager_start();
+            } else if (cmd == WIFI_ASYNC_STOP) {
+                wifi_manager_stop();
+            } else if (cmd == WIFI_ASYNC_CONNECT_DEFAULT) {
+                wifi_manager_connect_default();
+            }
+        }
+    }
+}
+
+static void dispatch_wifi_async(wifi_async_cmd_t cmd) {
+    if (s_wifi_async_queue == NULL) {
+        s_wifi_async_queue = xQueueCreate(4, sizeof(wifi_async_cmd_t));
+    }
+    if (s_wifi_async_task == NULL && s_wifi_async_queue != NULL) {
+        xTaskCreatePinnedToCoreWithCaps(
+            wifi_async_worker_loop,
+            "wifi_async",
+            4096,
+            NULL,
+            4,
+            &s_wifi_async_task,
+            0,
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT
+        );
+    }
+    if (s_wifi_async_queue != NULL) {
+        xQueueSend(s_wifi_async_queue, &cmd, 0);
+    }
+}
+
+void wifi_manager_start_async(void) {
+    dispatch_wifi_async(WIFI_ASYNC_START);
+}
+
+void wifi_manager_stop_async(void) {
+    dispatch_wifi_async(WIFI_ASYNC_STOP);
+}
+
+void wifi_manager_connect_default_async(void) {
+    dispatch_wifi_async(WIFI_ASYNC_CONNECT_DEFAULT);
 }

@@ -87,7 +87,7 @@ bool AppLockscreen::load_custom_from_sd() {
         }
     }
 
-    if (bsp_display_lock(1000)) {
+    if (bsp_display_lock(1500)) {
         memcpy(s_custom_buf, tmp, WALLPAPER_BYTES);
         s_custom_dsc.data = s_custom_buf;
         s_has_custom_bg = true;
@@ -98,9 +98,9 @@ bool AppLockscreen::load_custom_from_sd() {
         }
         bsp_display_unlock();
     } else {
-        memcpy(s_custom_buf, tmp, WALLPAPER_BYTES);
-        s_custom_dsc.data = s_custom_buf;
-        s_has_custom_bg = true;
+        free(tmp);
+        ESP_UTILS_LOGW("Skipped live custom wallpaper swap: display lock busy");
+        return false;
     }
 
     free(tmp);

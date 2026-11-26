@@ -10,6 +10,8 @@
 #include "driver/ledc.h"
 #include "esp_event.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 #include "bsp/esp-bsp.h"
 #include "bsp_board_extra.h"
@@ -52,13 +54,12 @@ int rtc_register_read(uint8_t regAddr, uint8_t *data, uint8_t len) {
 }
 
 int rtc_register_write(uint8_t regAddr, uint8_t *data, uint8_t len) {
-    uint8_t *buffer = (uint8_t *)malloc(len + 1);
-    if (!buffer) return -1;
+    uint8_t buffer[32];
+    if (!data || (size_t)len + 1 > sizeof(buffer)) return -1;
     buffer[0] = regAddr;
     memcpy(&buffer[1], data, len);
 
     esp_err_t ret = i2c_master_transmit(rtc_dev_handle, buffer, len + 1, I2C_MASTER_TIMEOUT_MS);
-    free(buffer);
 
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "RTC WRITE FAILED!");
@@ -70,7 +71,23 @@ int rtc_register_write(uint8_t regAddr, uint8_t *data, uint8_t len) {
 // AXP2101 Battery Telemetry & Haptic Motor (ALDO3 + GPIO18)
 static i2c_master_dev_handle_t axp_dev_handle = NULL;
 static esp_timer_handle_t s_vib_off_timer = NULL;
+static SemaphoreHandle_t s_audio_mutex = NULL;
 #define BSP_VIB_MOTOR_GPIO GPIO_NUM_18
+
+bool bsp_audio_lock(uint32_t timeout_ms) {
+    if (s_audio_mutex == NULL) {
+        s_audio_mutex = xSemaphoreCreateRecursiveMutex();
+    }
+    if (!s_audio_mutex) return true;
+    TickType_t ticks = (timeout_ms == 0) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
+    return (xSemaphoreTakeRecursive(s_audio_mutex, ticks) == pdTRUE);
+}
+
+void bsp_audio_unlock(void) {
+    if (s_audio_mutex) {
+        xSemaphoreGiveRecursive(s_audio_mutex);
+    }
+}
 
 static void vib_off_timer_cb(void* arg) {
     gpio_set_level(BSP_VIB_MOTOR_GPIO, 0);

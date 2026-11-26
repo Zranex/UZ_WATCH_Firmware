@@ -147,6 +147,11 @@ namespace esp_brookesia::apps {
             lv_timer_delete(timer_clock);
             timer_clock = nullptr;
         }
+        label_hour = nullptr;
+        label_minute = nullptr;
+        label_second = nullptr;
+        label_date = nullptr;
+        label_weekday = nullptr;
         return true;
     }
 

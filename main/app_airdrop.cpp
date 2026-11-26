@@ -7,8 +7,10 @@ extern "C" const lv_image_dsc_t icon_airdrop;
 
 #include "app_airdrop.hpp"
 #include "airdrop_manager.hpp"
+#include "app_tars.hpp"
 #include "esp_log.h"
 #include "wifi_manager.h"
+#include "ble_manager.h"
 #include "display_manager.h"
 #include <string.h>
 
@@ -42,17 +44,24 @@ static void airdrop_worker_loop(void* arg) {
         if (xQueueReceive(s_airdrop_cmd_queue, &cmd, portMAX_DELAY) == pdTRUE) {
             if (cmd == AIRDROP_CMD_START_AP) {
                 s_airdrop_worker_status = AD_STATUS_STARTING_AP;
-                ESP_LOGI(TAG, "[Worker] Starting AirDrop SoftAP + HTTP Server...");
+                ESP_LOGI(TAG, "[Worker] Starting AirDrop SoftAP + HTTP Server (BLE cleanly paused for 2.4GHz coex)...");
+                app_tars_stop_all_audio();
                 AirDropManager::stop_server();
                 wifi_manager_stop();
 
+                // Cleanly pause BLE radio while SoftAP Hotspot is running (zero 2.4GHz contention / zero disconnect storms)
+                ble_manager_set_softap_pause(true);
+                vTaskDelay(pdMS_TO_TICKS(100));
+
                 if (AirDropManager::init() != ESP_OK) {
                     ESP_LOGE(TAG, "[Worker] SD Card init failed");
+                    ble_manager_set_softap_pause(false);
                     s_airdrop_worker_status = AD_STATUS_ERR_SD;
                     continue;
                 }
                 if (AirDropManager::start_server() != ESP_OK) {
                     ESP_LOGE(TAG, "[Worker] HTTP Server start failed");
+                    ble_manager_set_softap_pause(false);
                     s_airdrop_worker_status = AD_STATUS_ERR_SERVER;
                     continue;
                 }
@@ -61,6 +70,7 @@ static void airdrop_worker_loop(void* arg) {
                 if (w_err != ESP_OK) {
                     ESP_LOGE(TAG, "[Worker] SoftAP start failed: %s", esp_err_to_name(w_err));
                     AirDropManager::stop_server();
+                    ble_manager_set_softap_pause(false);
                     s_airdrop_worker_status = AD_STATUS_ERR_WIFI;
                     continue;
                 }
@@ -69,9 +79,11 @@ static void airdrop_worker_loop(void* arg) {
 
             } else if (cmd == AIRDROP_CMD_START_STA) {
                 s_airdrop_worker_status = AD_STATUS_STARTING_STA;
-                ESP_LOGI(TAG, "[Worker] Switching AirDrop to Home Wi-Fi (STA)...");
+                ESP_LOGI(TAG, "[Worker] Switching AirDrop to Home Wi-Fi (STA) + Resuming BLE...");
+                app_tars_stop_all_audio();
                 AirDropManager::stop_server();
                 wifi_manager_stop();
+                ble_manager_set_softap_pause(false);
 
                 if (AirDropManager::init() != ESP_OK) {
                     s_airdrop_worker_status = AD_STATUS_ERR_SD;
@@ -93,9 +105,10 @@ static void airdrop_worker_loop(void* arg) {
 
             } else if (cmd == AIRDROP_CMD_STOP_ALL) {
                 s_airdrop_worker_status = AD_STATUS_STOPPING;
-                ESP_LOGI(TAG, "[Worker] Stopping AirDrop HTTP Server & Wi-Fi...");
+                ESP_LOGI(TAG, "[Worker] Stopping AirDrop HTTP Server & Wi-Fi -> Resuming BLE...");
                 AirDropManager::stop_server();
                 wifi_manager_stop();
+                ble_manager_set_softap_pause(false);
                 s_airdrop_worker_status = AD_STATUS_IDLE;
             }
         }
@@ -110,7 +123,7 @@ static void dispatch_airdrop_cmd(AirDropCmd cmd) {
         xTaskCreatePinnedToCoreWithCaps(
             airdrop_worker_loop,
             "airdrop_wrk",
-            4096,
+            5120,
             nullptr,
             4,
             &s_airdrop_worker_task,

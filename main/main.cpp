@@ -42,6 +42,7 @@ extern "C" {
 #include "app_school.hpp"
 #include "app_power.hpp"
 #include "app_tars.hpp"
+#include "app_call_manager.hpp"
 
 extern "C" {
 #include "ble_manager.h"
@@ -223,9 +224,7 @@ extern "C" void app_main(void)
     
     display_manager_set_wake_cb([]() {
         pedometer_set_low_power(false);
-        if (wifi_manager_is_active()) {
-            esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-        }
+        wifi_manager_on_screen_wake();
         if (bsp_display_lock(1000)) {
             lv_disp_trig_activity(NULL);
             // If an app is active in Brookesia, remain in that app without disrupting UI!
@@ -245,6 +244,8 @@ extern "C" void app_main(void)
         if (wifi_manager_is_ap_active()) {
             ESP_LOGI("Power", "Screen sleeping: cleanly stopping AirDrop Hotspot");
             AppAirDrop::request_stop_async();
+        } else {
+            wifi_manager_on_screen_sleep();
         }
         if (bsp_display_lock(1000)) {
             AppMediaPlayer::force_close();
@@ -328,6 +329,7 @@ extern "C" void app_main(void)
 
         /* Notifications UI Init */
         AppNotifications::init();
+        CallManager::init();
 
         /* 8. Durum Cubugu Guncelleme (Saat, Wi-Fi, Pil) */
         // Acilista aninda ilk guncelleme (0. saniye)
@@ -384,7 +386,21 @@ extern "C" void app_main(void)
 
     ESP_UTILS_LOGI("UZ WATCH v3 - Sistem Hazir!");
     ble_manager_init();
-    // Wi-Fi is strictly on-demand (Settings/AirDrop) to achieve 10-12+ hour battery life
+
+    // True post-Brookesia + post-BLE memory snapshot (proves real headroom!)
+    vTaskDelay(pdMS_TO_TICKS(300));
+    ESP_LOGW(ESP_UTILS_LOG_TAG, "--- MEMORY AFTER BROOKESIA + BLE INIT ---");
+    ESP_LOGW(ESP_UTILS_LOG_TAG, "INTERNAL Free: %u, Largest: %u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    ESP_LOGW(ESP_UTILS_LOG_TAG, "DMA Free: %u, Largest: %u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
+    ESP_LOGW(ESP_UTILS_LOG_TAG, "PSRAM Free: %u, Largest: %u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+    ESP_LOGW(ESP_UTILS_LOG_TAG, "-----------------------------------------");
+    // Wi-Fi is strictly on-demand (Settings/SmartHome/TARS/AirDrop) to achieve 10-12+ hour battery life
 }
 
 

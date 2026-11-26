@@ -57,7 +57,7 @@ constexpr base::Display::Data STYLESHEET_410_502_DARK_CORE_DISPLAY_DATA = {
 
 constexpr base::Manager::Data STYLESHEET_410_502_DARK_CORE_MANAGER_DATA = {
     .app = {
-        .max_running_num = 3,
+        .max_running_num = 1,
     },
     .flags = {
         .enable_app_save_snapshot = 0,

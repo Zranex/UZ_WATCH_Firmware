@@ -1,4 +1,5 @@
 #include "app_voice_recorder.hpp"
+#include "bsp_board_extra.h"
 extern const lv_image_dsc_t icon_voice_recorder;
 #include "esp_log.h"
 #include <sys/stat.h>
@@ -12,6 +13,7 @@ extern "C" esp_codec_dev_handle_t bsp_get_shared_mic_codec(void);
 extern esp_codec_dev_handle_t spk_codec_dev;
 extern "C" void bsp_audio_power_amp_enable(bool enable);
 extern "C" void bsp_audio_standby(void);
+extern "C" void app_tars_stop_all_audio(void);
 
 AppVoiceRecorder::AppVoiceRecorder() 
     : esp_brookesia::systems::phone::App("Ses Kaydi", &icon_voice_recorder, true),
@@ -26,6 +28,7 @@ AppVoiceRecorder::AppVoiceRecorder()
 AppVoiceRecorder::~AppVoiceRecorder() {}
 
 bool AppVoiceRecorder::run() {
+    app_tars_stop_all_audio();
     _is_app_closed = false;
     _selected_index = -1;
     if (_bg_obj != nullptr) {
@@ -124,22 +127,18 @@ bool AppVoiceRecorder::close() {
     _is_recording = false;
     _is_playing = false;
 
-    // 1. Wait for audio_task to finish cleanly if running
-    int wait_count = 0;
-    while (_task_handle != NULL && wait_count < 100) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-        wait_count++;
+    // NEVER spin-wait inside taskLVGL while holding lvgl_port_lock()!
+    // Only touch codec directly if audio_task is not running; otherwise audio_task closes it cleanly on exit.
+    if (_task_handle == NULL) {
+        if (_mic_codec && _mic_codec_opened) {
+            esp_codec_dev_close(_mic_codec);
+            _mic_codec_opened = false;
+        }
+        bsp_audio_power_amp_enable(false);
+        bsp_audio_standby();
     }
 
-    // 2. Safely close mic codec ONLY if open
-    if (_mic_codec && _mic_codec_opened) {
-        esp_codec_dev_close(_mic_codec);
-        _mic_codec_opened = false;
-    }
-    bsp_audio_power_amp_enable(false);
-    bsp_audio_standby();
-
-    // 3. Delete UI objects and clear pointers
+    // Delete UI objects and clear pointers
     if (_bg_obj != nullptr) {
         lv_obj_delete_async(_bg_obj);
         _bg_obj = nullptr;
@@ -250,7 +249,7 @@ void AppVoiceRecorder::btn_record_cb(lv_event_t *e) {
     if (!self || self->_is_app_closed) return;
     if (self->_is_recording) {
         self->_is_recording = false;
-    } else if (!self->_is_playing) {
+    } else if (!self->_is_playing && self->_task_handle == NULL) {
         self->_is_recording = true;
         self->_record_start_tick = xTaskGetTickCount();
         self->update_ui();
@@ -263,7 +262,7 @@ void AppVoiceRecorder::btn_play_cb(lv_event_t *e) {
     if (!self || self->_is_app_closed) return;
     if (self->_is_playing) {
         self->_is_playing = false;
-    } else if (!self->_is_recording && self->_selected_index >= 0 && self->_selected_index < (int)self->_recordings.size()) {
+    } else if (!self->_is_recording && self->_task_handle == NULL && self->_selected_index >= 0 && self->_selected_index < (int)self->_recordings.size()) {
         self->_is_playing = true;
         self->update_ui();
         xTaskCreate(audio_task, "audio_task", 4096, self, 3, &self->_task_handle);
@@ -347,6 +346,21 @@ void AppVoiceRecorder::audio_task(void *pvParameter) {
         return;
     }
     
+    bool audio_locked = bsp_audio_lock(500);
+    if (!audio_locked) {
+        ESP_LOGW(TAG, "Audio bus busy, aborting voice recorder operation");
+        free(buffer);
+        self->_is_recording = false;
+        self->_is_playing = false;
+        if (!self->_is_app_closed && bsp_display_lock(100)) {
+            self->update_ui();
+            bsp_display_unlock();
+        }
+        self->_task_handle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+
     if (self->_is_recording) {
         if (!self->_mic_codec) {
             ESP_LOGE(TAG, "Mic codec not available!");
@@ -453,6 +467,7 @@ void AppVoiceRecorder::audio_task(void *pvParameter) {
     }
 
     bsp_audio_standby();
+    bsp_audio_unlock();
     free(buffer);
     
     if (!self->_is_app_closed && bsp_display_lock(100)) {

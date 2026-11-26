@@ -196,9 +196,10 @@ namespace esp_brookesia::apps {
         char ssids[15][33];
         int num = wifi_manager_get_scanned_networks(ssids, 15);
         
+        // Preserve the 4 static controls (0=WiFi toggle, 1=Scan btn, 2=BT header, 3=BT toggle)
         uint32_t child_cnt = lv_obj_get_child_cnt(list);
-        while(child_cnt > 1) {
-            lv_obj_del(lv_obj_get_child(list, 1));
+        while(child_cnt > 4) {
+            lv_obj_del(lv_obj_get_child(list, 4));
             child_cnt = lv_obj_get_child_cnt(list);
         }
         
@@ -221,12 +222,12 @@ namespace esp_brookesia::apps {
         lv_obj_t * label = lv_obj_get_child(btn, 1); 
         
             if (wifi_manager_is_active()) {
-                wifi_manager_stop();
+                wifi_manager_stop_async();
                 if(label && lv_obj_check_type(label, &lv_label_class)) {
                     lv_label_set_text(label, "Wi-Fi'yi Ac (Gecici)");
                 }
             } else {
-                wifi_manager_start();
+                wifi_manager_start_async();
                 if(label && lv_obj_check_type(label, &lv_label_class)) {
                     lv_label_set_text(label, "Wi-Fi'yi Kapat (Gecici)");
                 }
@@ -255,9 +256,10 @@ namespace esp_brookesia::apps {
         lv_obj_t * list = (lv_obj_t *)lv_event_get_user_data(e);
         if (!list) return;
         
+        // Preserve the 4 static controls (0=WiFi toggle, 1=Scan btn, 2=BT header, 3=BT toggle)
         uint32_t child_cnt = lv_obj_get_child_cnt(list);
-        while(child_cnt > 1) {
-            lv_obj_del(lv_obj_get_child(list, 1));
+        while(child_cnt > 4) {
+            lv_obj_del(lv_obj_get_child(list, 4));
             child_cnt = lv_obj_get_child_cnt(list);
         }
 

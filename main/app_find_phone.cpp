@@ -8,6 +8,7 @@ extern const lv_image_dsc_t icon_find_phone;
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
 #include "app_local_music.hpp"
+#include "app_tars.hpp"
 #include <math.h>
 
 extern "C" {
@@ -99,9 +100,10 @@ static void find_watch_alarm_task(void* pv) {
     display_manager_turn_on();
     create_find_watch_modal_ui();
 
-    // Cleanly yield local music from codec if active
+    // Cleanly yield TARS & local music from shared codec before starting siren
+    app_tars_stop_all_audio();
     app_local_music_release_audio_for_alarm();
-    vTaskDelay(pdMS_TO_TICKS(50));
+    vTaskDelay(pdMS_TO_TICKS(60));
 
     esp_codec_dev_sample_info_t fs = {
         .bits_per_sample = 16,
@@ -111,13 +113,18 @@ static void find_watch_alarm_task(void* pv) {
         .mclk_multiple = 256,
     };
 
+    bool audio_locked = bsp_audio_lock(1000);
     bool codec_ok = false;
-    bsp_audio_power_amp_enable(true);
-    if (spk_codec_dev && esp_codec_dev_open(spk_codec_dev, &fs) == ESP_OK) {
-        codec_ok = true;
-        esp_codec_dev_set_out_vol(spk_codec_dev, 95); // 95% volume
+    if (audio_locked && spk_codec_dev) {
+        bsp_audio_power_amp_enable(true);
+        if (esp_codec_dev_open(spk_codec_dev, &fs) == ESP_OK) {
+            codec_ok = true;
+            esp_codec_dev_set_out_vol(spk_codec_dev, 90); // 90% loud & brownout-safe
+        } else {
+            ESP_LOGE(TAG, "Failed to open speaker codec for alarm");
+        }
     } else {
-        ESP_LOGE(TAG, "Failed to open speaker codec for alarm");
+        ESP_LOGE(TAG, "Audio bus busy for alarm");
     }
 
     const int SAMPLES_PER_TONE = 1600; // 100ms at 16kHz
@@ -129,16 +136,19 @@ static void find_watch_alarm_task(void* pv) {
             float t = (float)i / 16000.0f;
             float s1 = sinf(2.0f * (float)M_PI * 1046.0f * t); // C6
             float s2 = sinf(2.0f * (float)M_PI * 1568.0f * t); // G6
-            pcm_low[i] = (int16_t)(s1 * 30000.0f);
-            pcm_high[i] = (int16_t)(s2 * 30000.0f);
+            pcm_low[i] = (int16_t)(s1 * 28000.0f);
+            pcm_high[i] = (int16_t)(s2 * 28000.0f);
         }
     }
 
     int cycles = 0;
     while (s_find_watch_ringing && cycles < 30) {
         display_manager_reset_timer(); // Keep screen awake during entire alarm!
+        // Stagger motor haptic BEFORE siren writes so motor + 5V speaker PA never peak together!
         if ((cycles % 2) == 0) {
-            bsp_vibrate_pulse(150);
+            bsp_vibrate_pulse(100);
+            vTaskDelay(pdMS_TO_TICKS(115));
+            if (!s_find_watch_ringing) break;
         }
 
         if (codec_ok && pcm_low) {
@@ -159,12 +169,15 @@ static void find_watch_alarm_task(void* pv) {
     if (pcm_low) free(pcm_low);
     if (pcm_high) free(pcm_high);
 
-    if (codec_ok && spk_codec_dev) {
-        esp_codec_dev_set_out_vol(spk_codec_dev, 70);
-        esp_codec_dev_close(spk_codec_dev);
+    if (audio_locked) {
+        if (codec_ok && spk_codec_dev) {
+            esp_codec_dev_set_out_vol(spk_codec_dev, 70);
+            esp_codec_dev_close(spk_codec_dev);
+        }
+        bsp_audio_power_amp_enable(false);
+        bsp_audio_standby();
+        bsp_audio_unlock();
     }
-    bsp_audio_power_amp_enable(false);
-    bsp_audio_standby();
 
     s_find_watch_ringing = false;
 

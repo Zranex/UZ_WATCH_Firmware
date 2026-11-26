@@ -2,19 +2,19 @@ dependencies:
   brookesia_app_calculator:
     dependencies: []
     source:
-      path: E:\patrick_jane_saat_ilk_asama\components\brookesia_app_calculator
+      path: E:\UZ_WATCH_groq3x_hizlandirma\components\brookesia_app_calculator
       type: local
     version: 0.6.0
   brookesia_core:
     dependencies: []
     source:
-      path: E:\patrick_jane_saat_ilk_asama\components\brookesia_core
+      path: E:\UZ_WATCH_groq3x_hizlandirma\components\brookesia_core
       type: local
     version: 0.6.0-beta2
   esp32_s3_touch_amoled_2_06:
     dependencies: []
     source:
-      path: E:\patrick_jane_saat_ilk_asama\components\esp32_s3_touch_amoled_2_06
+      path: E:\UZ_WATCH_groq3x_hizlandirma\components\esp32_s3_touch_amoled_2_06
       type: local
     version: 2.0.0
   espressif/cjson:

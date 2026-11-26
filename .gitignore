@@ -7,3 +7,5 @@ build/
 managed_components/
 sdkconfig
 *.log
+
+main/tv_certs_local.h

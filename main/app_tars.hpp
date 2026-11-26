@@ -21,22 +21,27 @@ public:
 
     static AppTars* get_instance();
     void update_ui_state(const char* status_text, uint32_t status_color, int mic_level_pct,
-                         const char* user_text, const char* tars_text, const char* action_text);
+                         const char* user_text, const char* tars_text, const char* action_text,
+                         const char* trigger_btn_text = nullptr);
 
     bool is_open() const { return _bg_obj != nullptr; }
+    void request_close() { notifyCoreClosed(); }
     int get_humor() const { return _humor_pct; }
     void set_humor(int h);
 
 private:
     lv_obj_t* _bg_obj;
+    lv_obj_t* _btn_back;
     lv_obj_t* _params_label;
     lv_obj_t* _status_label;
     lv_obj_t* _level_bar;
+    lv_obj_t* _dialog_card;
     lv_obj_t* _user_label;
     lv_obj_t* _tars_label;
     lv_obj_t* _action_badge;
     lv_obj_t* _btn_humor;
     lv_obj_t* _btn_test;
+    lv_obj_t* _btn_test_label;
 
     int _humor_pct;
     int _honesty_pct;

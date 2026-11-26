@@ -6,6 +6,7 @@
 #include <freertos/task.h>
 #include <string>
 #include <vector>
+#include <mutex>
 
 class AppLocalMusic : public esp_brookesia::systems::phone::App {
 public:
@@ -34,6 +35,7 @@ private:
     void update_volume(int change);
 
     std::vector<std::string> _playlist;
+    std::recursive_mutex _playlist_mutex;
     int _current_song_index;
     int _volume;
 

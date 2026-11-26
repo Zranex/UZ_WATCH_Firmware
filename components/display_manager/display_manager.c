@@ -9,6 +9,7 @@
 #include "bsp/esp32_s3_touch_amoled_2_06.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "driver/gpio.h"
 #include "lvgl.h"
 #include "esp_lvgl_port.h"
@@ -31,12 +32,13 @@ static uint8_t current_brightness = 50; // 50% default: saves ~50% AMOLED power 
 
 static const char *TAG = "DisplayMgr";
 
-static bool display_on = true;
+static volatile bool display_on = true;
 static volatile bool s_sleep_requested = false;
 static uint32_t timeout_ms = 5000;
 static void (*wake_cb)(void) = NULL;
 static void (*sleep_cb)(void) = NULL;
 static TickType_t s_last_sleep_tick = 0;
+static SemaphoreHandle_t s_disp_mutex = NULL;
 
 #if CONFIG_PM_ENABLE
 static esp_pm_lock_handle_t s_cpu_max_lock = NULL;
@@ -46,23 +48,32 @@ static void display_turn_off_internal(void) {
     if (!display_on) {
         return;
     }
+    if (s_disp_mutex && xSemaphoreTake(s_disp_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) {
+        ESP_LOGW(TAG, "display_turn_off_internal skipped: mutex busy");
+        return;
+    }
+    if (!display_on) {
+        if (s_disp_mutex) xSemaphoreGive(s_disp_mutex);
+        return;
+    }
     ESP_LOGI(TAG, "Turning display off (AMOLED Sleep + LVGL Pause + 80MHz DFS)");
     
     if (sleep_cb) {
         sleep_cb();
     }
 
-    // 1. Stop LVGL task to eliminate all rendering & QSPI DMA traffic
-    if (lvgl_port_lock(1000)) {
+    // 1 & 2. Serialize LVGL stop + QSPI panel sleep commands INSIDE lvgl_port_lock()
+    // so an in-flight QSPI DMA flush (trans_queue_depth=1) can NEVER collide with sleep commands!
+    if (lvgl_port_lock(1500)) {
         lvgl_port_stop();
+        bsp_display_brightness_set(0);
+        bsp_display_sleep();
         lvgl_port_unlock();
     } else {
-        lvgl_port_stop();
+        ESP_LOGW(TAG, "display_turn_off_internal deferred: lvgl_port_lock busy");
+        if (s_disp_mutex) xSemaphoreGive(s_disp_mutex);
+        return;
     }
-
-    // 2. Put panel into ultra-low-power sleep (0x28 + 0x10)
-    bsp_display_sleep();
-    bsp_display_brightness_set(0);
 
     // 3. Drop CPU frequency to 80MHz while screen is off to save power (keeps APB at 80MHz for I2C stability)
 #if CONFIG_PM_ENABLE
@@ -73,10 +84,13 @@ static void display_turn_off_internal(void) {
     display_on = false;
     s_sleep_requested = false;
     s_last_sleep_tick = xTaskGetTickCount();
+
+    if (s_disp_mutex) xSemaphoreGive(s_disp_mutex);
 }
 
 void display_manager_turn_off(void) {
-    display_turn_off_internal();
+    // Always defer sleep to display_manager_task to avoid cross-task QSPI/LVGL deadlocks
+    s_sleep_requested = true;
 }
 
 void display_manager_request_off(void) {
@@ -85,10 +99,19 @@ void display_manager_request_off(void) {
 }
 
 void display_manager_turn_on(void) {
-    static bool is_waking = false;
     s_sleep_requested = false;
-    if (!display_on && !is_waking) {
-        is_waking = true;
+    if (display_on) {
+        display_manager_reset_timer();
+        return;
+    }
+
+    bool did_wake = false;
+    if (s_disp_mutex && xSemaphoreTake(s_disp_mutex, pdMS_TO_TICKS(1500)) != pdTRUE) {
+        ESP_LOGW(TAG, "display_manager_turn_on skipped: mutex busy");
+        return;
+    }
+
+    if (!display_on) {
         ESP_LOGI(TAG, "Turning display on (Wake Panel + Resume LVGL + 240MHz Boost)");
         
         // 1. Boost CPU to 240MHz immediately for 60fps UI
@@ -97,21 +120,27 @@ void display_manager_turn_on(void) {
             (void)esp_pm_lock_acquire(s_cpu_max_lock);
         }
         #endif
-        // 2. Wake AMOLED panel from sleep (0x11 + 0x29)
-        bsp_display_wake();
-        
-        // 3. Resume LVGL task
-        lvgl_port_resume();
-        
-        // 4. Restore brightness
-        bsp_display_brightness_set(current_brightness);
+        // 2, 3, 4. Serialize QSPI wake + brightness + LVGL resume INSIDE lvgl_port_lock()
+        if (lvgl_port_lock(1500)) {
+            bsp_display_wake();
+            bsp_display_brightness_set(current_brightness);
+            lvgl_port_resume();
+            lvgl_port_unlock();
+        } else {
+            ESP_LOGW(TAG, "display_manager_turn_on: lvgl lock timeout, forcing wake");
+            bsp_display_wake();
+            bsp_display_brightness_set(current_brightness);
+            lvgl_port_resume();
+        }
         
         display_on = true;
+        did_wake = true;
+    }
 
-        if (wake_cb) {
-            wake_cb(); // This will trigger AppLockscreen::show_again() if on home screen
-        }
-        is_waking = false;
+    if (s_disp_mutex) xSemaphoreGive(s_disp_mutex);
+
+    if (did_wake && wake_cb) {
+        wake_cb(); // Triggered outside s_disp_mutex so wake_cb can safely acquire lvgl_port_lock
     }
     display_manager_reset_timer();
 }
@@ -147,8 +176,9 @@ void display_manager_set_sleep_cb(void (*cb)(void)) {
 void display_manager_set_brightness(uint8_t brightness) {
     if (brightness > 100) brightness = 100;
     current_brightness = brightness;
-    if (display_on) {
+    if (display_on && lvgl_port_lock(200)) {
         bsp_display_brightness_set(current_brightness);
+        lvgl_port_unlock();
     }
 }
 
@@ -232,6 +262,10 @@ static void display_manager_task(void *arg) {
 void display_manager_init(void) {
     timeout_ms = 5000; // 5 seconds default timeout (smartwatch power standard)
 
+    if (!s_disp_mutex) {
+        s_disp_mutex = xSemaphoreCreateMutex();
+    }
+
     // Ensure TOUCH_INT_PIN (GPIO 38) has pull-up enabled so it is stable HIGH and pulled LOW on touch
     gpio_set_pull_mode(TOUCH_INT_PIN, GPIO_PULLUP_ONLY);
 
@@ -239,7 +273,7 @@ void display_manager_init(void) {
 
     display_manager_pm_early_init();
 
-    xTaskCreate(display_manager_task, "display_mgr", 4000, NULL, 4, NULL);
+    xTaskCreate(display_manager_task, "display_mgr", 4096, NULL, 4, NULL);
 }
 
 void display_manager_pm_early_init(void)

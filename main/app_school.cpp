@@ -50,9 +50,20 @@ static const SchoolPeriod s_periods[] = {
 
 static const int NUM_PERIODS = sizeof(s_periods) / sizeof(s_periods[0]);
 
-static void play_discreet_bell_chime_task(void* pv) {
-    bsp_vibrate_pulse(180);
-    if (spk_codec_dev) {
+static void play_discreet_bell_chime_task(void* arg) {
+    char* banner_msg = (char*)arg;
+    bsp_vibrate_pulse(120);
+    if (banner_msg) {
+        display_manager_turn_on();
+        if (bsp_display_lock(1000)) {
+            AppNotifications::show("Okul Asistani", banner_msg);
+            bsp_display_unlock();
+        }
+        free(banner_msg);
+    }
+    vTaskDelay(pdMS_TO_TICKS(180)); // Let display wake & vibration motor settle before speaker PA
+
+    if (spk_codec_dev && bsp_audio_lock(250)) {
         esp_codec_dev_sample_info_t fs = {
             .bits_per_sample = 16,
             .channel = 1,
@@ -60,21 +71,26 @@ static void play_discreet_bell_chime_task(void* pv) {
             .sample_rate = 16000,
             .mclk_multiple = 256,
         };
-        bsp_audio_power_amp_enable(true);
-        if (esp_codec_dev_open(spk_codec_dev, &fs) == ESP_OK) {
-            esp_codec_dev_set_out_vol(spk_codec_dev, 25); // 25% quiet volume
-            int16_t pcm[1600]; // 100ms at 16kHz
-            for (int i = 0; i < 1600; i++) {
-                float t = (float)i / 16000.0f;
-                float decay = 1.0f - ((float)i / 1600.0f);
-                float s = sinf(2.0f * M_PI * 932.0f * t) * decay * 0.4f; // ~B♭5 warm bell chime
-                pcm[i] = (int16_t)(s * 32767.0f);
+        // Heap/PSRAM allocation eliminates the fatal 3200B-on-3072B stack overflow!
+        int16_t* pcm = (int16_t*)malloc(1600 * sizeof(int16_t));
+        if (pcm) {
+            bsp_audio_power_amp_enable(true);
+            if (esp_codec_dev_open(spk_codec_dev, &fs) == ESP_OK) {
+                esp_codec_dev_set_out_vol(spk_codec_dev, 25); // 25% quiet volume
+                for (int i = 0; i < 1600; i++) {
+                    float t = (float)i / 16000.0f;
+                    float decay = 1.0f - ((float)i / 1600.0f);
+                    float s = sinf(2.0f * M_PI * 932.0f * t) * decay * 0.4f; // ~B♭5 warm bell chime
+                    pcm[i] = (int16_t)(s * 32767.0f);
+                }
+                esp_codec_dev_write(spk_codec_dev, pcm, 1600 * sizeof(int16_t));
+                esp_codec_dev_close(spk_codec_dev);
             }
-            esp_codec_dev_write(spk_codec_dev, pcm, sizeof(pcm));
-            esp_codec_dev_close(spk_codec_dev);
+            free(pcm);
+            bsp_audio_power_amp_enable(false);
+            bsp_audio_standby();
         }
-        bsp_audio_power_amp_enable(false);
-        bsp_audio_standby();
+        bsp_audio_unlock();
     }
     vTaskDelete(NULL);
 }
@@ -132,31 +148,31 @@ void AppSchool::check_bell_tick() {
 
     for (int i = 0; i < NUM_PERIODS; i++) {
         if (current_min == s_periods[i].start_min) {
-            // New period started!
-            char banner[64];
-            if (s_periods[i].is_break) {
-                snprintf(banner, sizeof(banner), "Zil Caldi! %s Basladi", s_periods[i].name);
-            } else {
-                snprintf(banner, sizeof(banner), "Ders Zili Caldi: %s", s_periods[i].name);
+            // New period started! Offload display wake + LVGL banner + bell chime OFF esp_timer task!
+            char* banner = (char*)malloc(64);
+            if (banner) {
+                if (s_periods[i].is_break) {
+                    snprintf(banner, 64, "Zil Caldi! %s Basladi", s_periods[i].name);
+                } else {
+                    snprintf(banner, 64, "Ders Zili Caldi: %s", s_periods[i].name);
+                }
             }
-            display_manager_turn_on();
-            if (bsp_display_lock(1000)) {
-                AppNotifications::show("Okul Asistani", banner);
-                bsp_display_unlock();
+            if (xTaskCreate(play_discreet_bell_chime_task, "bell_sound", 4096, banner, 3, NULL) != pdPASS) {
+                free(banner);
             }
-            xTaskCreate(play_discreet_bell_chime_task, "bell_sound", 3072, NULL, 4, NULL);
             return;
         }
     }
 
     // Check school dismissal (15:05)
     if (current_min == (15*60 + 5)) {
-        display_manager_turn_on();
-        if (bsp_display_lock(1000)) {
-            AppNotifications::show("Okul Asistani", "Okul Bitti! Iyi Tatiller!");
-            bsp_display_unlock();
+        char* banner = (char*)malloc(64);
+        if (banner) {
+            snprintf(banner, 64, "Okul Bitti! Iyi Tatiller!");
         }
-        xTaskCreate(play_discreet_bell_chime_task, "bell_sound", 3072, NULL, 4, NULL);
+        if (xTaskCreate(play_discreet_bell_chime_task, "bell_sound", 4096, banner, 3, NULL) != pdPASS) {
+            free(banner);
+        }
     }
 }
 

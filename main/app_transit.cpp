@@ -388,8 +388,8 @@ void AppTransit::request_refresh() {
         if (_routes[i].lbl_sub) lv_label_set_text(_routes[i].lbl_sub, _routes[i].current_sub.c_str());
     }
 
-    // 2. If BLE is active, request live data from Companion App; otherwise report offline active
-    if (ble_manager_is_active()) {
+    // 2. If phone is actually BLE-connected, request live data from Companion App; otherwise report offline active
+    if (ble_manager_is_connected()) {
         if (_lbl_status) {
             lv_label_set_text(_lbl_status, "Canli sorgulaniyor...");
             lv_obj_set_style_text_color(_lbl_status, lv_color_hex(0xFFA000), 0);
@@ -626,7 +626,8 @@ extern "C" void app_transit_update_from_ble(const char* payload) {
     strncpy(buf, payload, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
 
-    char* token = strtok(buf, "|");
+    char* saveptr = nullptr;
+    char* token = strtok_r(buf, "|", &saveptr);
     int index = 0;
     char* times[4] = {nullptr};
     while (token != NULL && index < 4) {
@@ -635,7 +636,7 @@ extern "C" void app_transit_update_from_ble(const char* payload) {
             *colon = '\0';
             times[index] = colon + 1;
         }
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         index++;
     }
 

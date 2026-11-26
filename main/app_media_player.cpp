@@ -125,7 +125,16 @@ bool AppMediaPlayer::run() {
     lv_label_set_text(label_next, LV_SYMBOL_NEXT);
     lv_obj_center(label_next);
 
-    // Initial theme apply
+    // Initial theme & cached media metadata apply (so opening app immediately shows playing song!)
+    if (!_current_title.empty() && _label_title) {
+        lv_label_set_text(_label_title, _current_title.c_str());
+    }
+    if (!_current_artist.empty() && _label_artist) {
+        lv_label_set_text(_label_artist, _current_artist.c_str());
+    }
+    if (_label_play_icon) {
+        lv_label_set_text(_label_play_icon, (_current_state == "PLAYING") ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+    }
     apply_theme(_current_source.empty() ? "UNKNOWN" : _current_source.c_str());
 
     return true;
@@ -204,9 +213,11 @@ void AppMediaPlayer::update_media_data(const char* source, const char* title, co
     if (!_instance) return;
 
     _instance->_current_source = source ? source : "";
-    _instance->_current_state = state ? state : "PAUSED";
+    _instance->_current_title  = title ? title : "";
+    _instance->_current_artist = artist ? artist : "";
+    _instance->_current_state  = state ? state : "PAUSED";
     
-    if (!_instance->_bg_obj) return; // App is not running/visible
+    if (!_instance->_bg_obj) return; // App is not running/visible; state cached for next open!
     
     if (title && _instance->_label_title) lv_label_set_text(_instance->_label_title, title);
     if (artist && _instance->_label_artist) lv_label_set_text(_instance->_label_artist, artist);

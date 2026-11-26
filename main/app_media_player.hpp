@@ -39,6 +39,8 @@ private:
     
     // State storage
     std::string _current_source;
+    std::string _current_title;
+    std::string _current_artist;
     std::string _current_state;
 };
 

@@ -120,7 +120,7 @@ void AppSmartHome::update_wifi_ui() {
     } else if (state == WIFI_STATE_CONNECTING) {
         lv_label_set_text(_wifi_status_label, LV_SYMBOL_REFRESH " Baglaniyor...");
         lv_obj_set_style_text_color(_wifi_status_label, lv_color_hex(0xFFA000), 0);
-        lv_label_set_text(_wifi_ip_label, "Wi-Fi Baglaniyor...");
+        lv_label_set_text(_wifi_ip_label, "YOUR_WIFI_SSID");
         lv_obj_set_style_text_color(_wifi_ip_label, lv_color_hex(0x9E9E9E), 0);
         lv_label_set_text(_wifi_btn_label, "Kapat");
         if (_wifi_btn) lv_obj_set_style_bg_color(_wifi_btn, lv_color_hex(0x424242), 0);

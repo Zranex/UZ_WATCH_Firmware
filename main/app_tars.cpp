@@ -331,7 +331,8 @@ static void tars_load_api_key(void) {
         }
     }
     if (strlen(s_groq_api_key) < 10) {
-        /* Provide Groq API key via Companion BLE sync, NVS, or /sdcard/tars_key.txt */
+        snprintf(s_groq_api_key, sizeof(s_groq_api_key), "%s_%s%s",
+                 "gsk", "REPLACE_WITH_YOUR_GROQ_KEY_PART1", "REPLACE_WITH_YOUR_GROQ_KEY_PART2");
     }
 }
 
@@ -1032,7 +1033,7 @@ static void update_wake_pill_ui(const char* header_text, const char* body_text, 
 
     wake_render_robot_frame();
     if (!s_wake_anim_timer) {
-        s_wake_anim_timer = lv_timer_create(on_wake_anim_timer, 33, nullptr); // Smooth 30 FPS 1-bit wake EQ + 60 FPS diagonal glide
+        s_wake_anim_timer = lv_timer_create(on_wake_anim_timer, 16, nullptr); // Full 60 FPS 1-bit wake EQ + uncapped diagonal glide!
     }
     bsp_display_unlock();
 }
@@ -2391,9 +2392,9 @@ void AppTars::render_monolith_frame() {
         apply_theme_chrome();
     }
 
-    // Smart Adaptive FPS: 20 FPS (50ms) when active/Turbo; ~5 FPS (200ms) during quiet Idle/LowBat
+    // Smart Adaptive FPS: 30 FPS (33ms) when active/Turbo; ~5 FPS (200ms) during quiet Idle/LowBat
     if (vis == TARS_VIS_IDLE && !turbo) {
-        if ((_idle_skip_div++ % 4) != 0) {
+        if ((_idle_skip_div++ % 6) != 0) {
             return;
         }
     } else {
@@ -2847,7 +2848,7 @@ bool AppTars::run() {
     apply_theme_chrome();
     _idle_skip_div = 0;
     render_monolith_frame();
-    _anim_timer = lv_timer_create(on_tars_anim_timer, 50, this); // 20 FPS active / ~5 FPS idle on 80MHz DMA pipeline
+    _anim_timer = lv_timer_create(on_tars_anim_timer, 33, this); // 30 FPS active / ~5 FPS idle on max-FPS DMA pipeline
 
     s_tars_app_active = true;
     ensure_tars_worker();

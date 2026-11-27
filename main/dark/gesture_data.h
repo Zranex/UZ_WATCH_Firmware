@@ -23,7 +23,7 @@ constexpr Gesture::IndicatorBarData STYLESHEET_410_502_DARK_GESTURE_LEFT_RIGHT_I
     },
     .animation = {
         .scale_back_path_type = gui::StyleAnimation::ANIM_PATH_TYPE_BOUNCE,
-        .scale_back_time_ms = 500,
+        .scale_back_time_ms = 260,
     },
 };
 
@@ -41,12 +41,12 @@ constexpr Gesture::IndicatorBarData STYLESHEET_410_502_DARK_GESTURE_BOTTOM_INDIC
     },
     .animation = {
         .scale_back_path_type = gui::StyleAnimation::ANIM_PATH_TYPE_BOUNCE,
-        .scale_back_time_ms = 500,
+        .scale_back_time_ms = 260,
     },
 };
 
 constexpr Gesture::Data STYLESHEET_410_502_DARK_GESTURE_DATA = {
-    .detect_period_ms = 20,
+    .detect_period_ms = 10,
     .threshold = {
         .direction_vertical = 50,
         .direction_horizon = 50,

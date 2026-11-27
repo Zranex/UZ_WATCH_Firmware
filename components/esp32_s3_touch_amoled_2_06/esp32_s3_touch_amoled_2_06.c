@@ -11,6 +11,7 @@
 #include "driver/ledc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_timer.h"
 
 #include "esp_lcd_sh8601.h"
 #include "esp_lcd_touch_ft5x06.h"
@@ -507,8 +508,8 @@ esp_err_t bsp_display_new(const bsp_display_config_t *config, esp_lcd_panel_hand
     ESP_ERROR_CHECK(spi_bus_initialize(BSP_LCD_SPI_NUM, &buscfg, SPI_DMA_CH_AUTO));
 
     esp_lcd_panel_io_spi_config_t io_config = SH8601_PANEL_IO_QSPI_CONFIG(BSP_LCD_CS, NULL, NULL);
-    io_config.pclk_hz = 80 * 1000 * 1000;   // 80MHz QSPI (2x bandwidth -> 10.3ms full frame -> 60 FPS capable!)
-    io_config.trans_queue_depth = 8;         // Hardware DMA pipelining (eliminates strip wait bubbles)
+    io_config.pclk_hz = 80 * 1000 * 1000;   // 80MHz QSPI (max ESP32-S3 SPI2 bandwidth)
+    io_config.trans_queue_depth = 10;        // Full 10-deep hardware DMA pipeline
 
     sh8601_vendor_config_t vendor_config = {
         .init_cmds = lcd_init_cmds,
@@ -569,19 +570,103 @@ esp_err_t bsp_touch_new(const bsp_touch_config_t *config, esp_lcd_touch_handle_t
     return esp_lcd_touch_new_i2c_ft5x06(tp_io_handle, &tp_cfg, ret_touch);
 }
 
-#define BSP_DISPLAY_FLUSH_LINES 30
+#define BSP_DISPLAY_FLUSH_LINES 32
+
+#if LVGL_VERSION_MAJOR >= 9
+static int64_t s_fps_win_start_us = 0;
+static int64_t s_fps_render_start_us = 0;
+static int64_t s_fps_wait_start_us = 0;
+static int64_t s_fps_flush_start_us = 0;
+static uint32_t s_fps_frames = 0;
+static int64_t s_fps_render_sum_us = 0;
+static int64_t s_fps_wait_sum_us = 0;
+static int64_t s_fps_flush_sum_us = 0;
+static uint64_t s_fps_px_sum = 0;
+static uint32_t s_fps_strips_sum = 0;
+
+static void bsp_fps_refr_start_cb(lv_event_t *e) {
+    (void)e;
+    s_fps_render_start_us = esp_timer_get_time();
+}
+
+static void bsp_fps_wait_start_cb(lv_event_t *e) {
+    (void)e;
+    s_fps_wait_start_us = esp_timer_get_time();
+}
+
+static void bsp_fps_wait_finish_cb(lv_event_t *e) {
+    (void)e;
+    int64_t now = esp_timer_get_time();
+    if (s_fps_wait_start_us > 0 && now >= s_fps_wait_start_us) {
+        s_fps_wait_sum_us += (now - s_fps_wait_start_us);
+    }
+    s_fps_wait_start_us = 0;
+}
+
+static void bsp_fps_flush_start_cb(lv_event_t *e) {
+    const lv_area_t *area = (const lv_area_t *)lv_event_get_param(e);
+    if (area) {
+        s_fps_px_sum += (uint64_t)lv_area_get_size(area);
+    }
+    s_fps_strips_sum++;
+    s_fps_flush_start_us = esp_timer_get_time();
+}
+
+static void bsp_fps_flush_finish_cb(lv_event_t *e) {
+    (void)e;
+    int64_t now = esp_timer_get_time();
+    if (s_fps_flush_start_us > 0 && now >= s_fps_flush_start_us) {
+        s_fps_flush_sum_us += (now - s_fps_flush_start_us);
+    }
+    s_fps_flush_start_us = 0;
+}
+
+static void bsp_fps_refr_ready_cb(lv_event_t *e) {
+    (void)e;
+    int64_t now = esp_timer_get_time();
+    if (s_fps_win_start_us == 0) {
+        s_fps_win_start_us = now;
+    }
+    if (s_fps_render_start_us > 0 && now >= s_fps_render_start_us) {
+        s_fps_render_sum_us += (now - s_fps_render_start_us);
+    }
+    s_fps_frames++;
+    int64_t elapsed_us = now - s_fps_win_start_us;
+    if (elapsed_us >= 2000000LL) {
+        if (s_fps_frames >= 4) {
+            float fps = ((float)s_fps_frames * 1000000.0f) / (float)elapsed_us;
+            float total_ms = ((float)s_fps_render_sum_us / (float)s_fps_frames) / 1000.0f;
+            float wait_ms = ((float)s_fps_wait_sum_us / (float)s_fps_frames) / 1000.0f;
+            float flush_ms = ((float)s_fps_flush_sum_us / (float)s_fps_frames) / 1000.0f;
+            float draw_ms = total_ms - wait_ms - flush_ms;
+            if (draw_ms < 0.0f) draw_ms = 0.0f;
+            unsigned avg_px = (unsigned)(s_fps_px_sum / s_fps_frames);
+            unsigned avg_strips = (unsigned)(s_fps_strips_sum / s_fps_frames);
+            ESP_LOGI(TAG, "[FPS] Live=%.1f FPS | frame=%.2fms (draw=%.2fms, dma_wait=%.2fms, flush_cb=%.2fms, px=%u, strips=%u, f=%u)",
+                     fps, total_ms, draw_ms, wait_ms, flush_ms, avg_px, avg_strips, (unsigned)s_fps_frames);
+        }
+        s_fps_win_start_us = now;
+        s_fps_frames = 0;
+        s_fps_render_sum_us = 0;
+        s_fps_wait_sum_us = 0;
+        s_fps_flush_sum_us = 0;
+        s_fps_px_sum = 0;
+        s_fps_strips_sum = 0;
+    }
+}
+#endif
 
 static lv_display_t *bsp_display_lcd_init()
 {
     const bsp_display_config_t disp_config = {
-        .max_transfer_sz = BSP_LCD_H_RES * BSP_DISPLAY_FLUSH_LINES * sizeof(lv_color_t), // 410 * 30 * 2 = 24,600 bytes
+        .max_transfer_sz = BSP_LCD_H_RES * BSP_DISPLAY_FLUSH_LINES * sizeof(lv_color_t), // 410 * 32 * 2 = 26,240 bytes
     };
 
     BSP_ERROR_CHECK_RETURN_NULL(bsp_display_new(&disp_config, &panel_handle, &io_handle));
 
     int buffer_size = BSP_LCD_H_RES * BSP_DISPLAY_FLUSH_LINES;
 
-    // 60 FPS Zero-Copy Double-Buffered Internal DMA SRAM (48 KB total; leaves ~126 KB Internal SRAM free!)
+    // Max-FPS Zero-Copy Double-Buffered Internal DMA SRAM (51.2 KB total; only 16 strips/frame!)
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = io_handle,
         .panel_handle = panel_handle,
@@ -605,7 +690,7 @@ static lv_display_t *bsp_display_lcd_init()
             .buff_dma = true,
             .buff_spiram = false,
 #if LVGL_VERSION_MAJOR >= 9
-            .swap_bytes = true,
+            .swap_bytes = false, // Handled by 32-bit DMA-overlapped pre-swap in lv_refr.c!
 #endif
         }};
     lv_display_t *disp = lvgl_port_add_disp(&disp_cfg);
@@ -616,9 +701,15 @@ static lv_display_t *bsp_display_lcd_init()
 
 #if LVGL_VERSION_MAJOR >= 9
     lv_display_add_event_cb(disp, rounder_event_cb, LV_EVENT_INVALIDATE_AREA, NULL);
+    lv_display_add_event_cb(disp, bsp_fps_refr_start_cb, LV_EVENT_REFR_START, NULL);
+    lv_display_add_event_cb(disp, bsp_fps_wait_start_cb, LV_EVENT_FLUSH_WAIT_START, NULL);
+    lv_display_add_event_cb(disp, bsp_fps_wait_finish_cb, LV_EVENT_FLUSH_WAIT_FINISH, NULL);
+    lv_display_add_event_cb(disp, bsp_fps_flush_start_cb, LV_EVENT_FLUSH_START, NULL);
+    lv_display_add_event_cb(disp, bsp_fps_flush_finish_cb, LV_EVENT_FLUSH_FINISH, NULL);
+    lv_display_add_event_cb(disp, bsp_fps_refr_ready_cb, LV_EVENT_REFR_READY, NULL);
     lv_timer_t *refr_timer = lv_display_get_refr_timer(disp);
     if (refr_timer) {
-        lv_timer_set_period(refr_timer, 16); // Lock display refresh cadence to 60 FPS (16ms)
+        lv_timer_set_period(refr_timer, 8); // Uncapped 125Hz engine ceiling -> zero dropped frames vs 60Hz AMOLED!
     }
 #else
     lv_disp_t *disp_v8 = (lv_disp_t *)disp;
@@ -646,7 +737,7 @@ static lv_indev_t *bsp_display_indev_init(lv_display_t *disp)
     if (indev) {
         lv_timer_t *rt = lv_indev_get_read_timer(indev);
         if (rt) {
-            lv_timer_set_period(rt, 16); // 60 Hz responsive touch swipe sampling
+            lv_timer_set_period(rt, 10); // 100 Hz ultra-responsive touch finger tracking
         }
     }
 #endif

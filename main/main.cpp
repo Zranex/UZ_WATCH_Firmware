@@ -74,7 +74,7 @@ static Phone* g_phone = nullptr;
         .task_stack = 20 * 1024,       \
         .task_affinity = 1,      \
         .task_max_sleep_ms = 500, \
-        .timer_period_ms = 4,     \
+        .timer_period_ms = 2,     \
     }
 
 static bool s_wrist_wake_enabled = true;

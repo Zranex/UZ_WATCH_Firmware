@@ -31,11 +31,11 @@ constexpr NavigationBar::Data STYLESHEET_410_502_DARK_NAVIGATION_BAR_DATA = {
     },
     .visual_flex = {
         .show_animation = {
-            .duration_ms = 200,
+            .duration_ms = 140,
             .path_type = gui::StyleAnimation::ANIM_PATH_TYPE_EASE_OUT,
         },
         .hide_animation = {
-            .duration_ms = 200,
+            .duration_ms = 140,
             .path_type = gui::StyleAnimation::ANIM_PATH_TYPE_EASE_IN,
         },
         .hide_timer_period_ms = 2000,

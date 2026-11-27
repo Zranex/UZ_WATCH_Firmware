@@ -58,10 +58,119 @@ static volatile bool s_tars_manual_toggle = false;
 static volatile bool s_wake_pill_dismissed = false;
 static char s_groq_api_key[160] = {0};
 
-// Floating wake/reply overlay card (positioned comfortably below top rounded bezel & status bar)
-static lv_obj_t* s_wake_pill = nullptr;
+// Shared 1-Bit Pixel TARS Monolith Palettes & Primitives (used by both Full App & Sol Ust Capraz Wake Overlay)
+struct TarsMonoPalette {
+    const char* name;
+    uint32_t fg;
+    uint32_t mid;
+    uint32_t dim;
+    uint32_t acc;
+};
+
+static const TarsMonoPalette kTarsPalettes[4] = {
+    { "BEYAZ", 0xF1F5F9, 0x64748B, 0x1E293B, 0xFB923C }, // 0: Titanyum Beyaz (default)
+    { "CELIK", 0xE2E8F0, 0x475569, 0x0F172A, 0x38BDF8 }, // 1: Endurance Buz Celik
+    { "AMBER", 0xFDBA74, 0x9A3412, 0x271306, 0xFEF08A }, // 2: Flipper Turuncu
+    { "YESIL", 0x86EFAC, 0x166534, 0x052E16, 0xFACC15 }, // 3: Fosfor Yesil
+};
+
+static const TarsMonoPalette kTarsTurboPal  = { "TURBO", 0xF87171, 0x991B1B, 0x2A090A, 0xFDE047 };
+static const TarsMonoPalette kTarsLowBatPal = { "UYKU",  0xD97706, 0x78350F, 0x1C1005, 0xF59E0B };
+static const char* kTarsStyleNames[3] = { "SAF", "NASA", "ASIM" };
+
+static int s_shared_ui_tone = 0;
+static int s_shared_ui_style = 0;
+static bool s_shared_prefs_loaded = false;
+
+static void tars_ensure_shared_prefs(void) {
+    if (s_shared_prefs_loaded) return;
+    s_shared_prefs_loaded = true;
+    nvs_handle_t h;
+    if (nvs_open("tars_cfg", NVS_READONLY, &h) == ESP_OK) {
+        int32_t v = 0;
+        if (nvs_get_i32(h, "ui_tone", &v) == ESP_OK && v >= 0 && v < 4) s_shared_ui_tone = (int)v;
+        if (nvs_get_i32(h, "ui_style", &v) == ESP_OK && v >= 0 && v < 3) s_shared_ui_style = (int)v;
+        nvs_close(h);
+    }
+}
+
+static inline uint16_t tars_hex565(uint32_t hex) {
+    uint16_t r = (uint16_t)((hex >> 16) & 0xFF);
+    uint16_t g = (uint16_t)((hex >> 8) & 0xFF);
+    uint16_t b = (uint16_t)(hex & 0xFF);
+    return (uint16_t)(((r & 0xF8u) << 8) | ((g & 0xFCu) << 3) | (b >> 3));
+}
+
+static inline void mono_px_s(uint16_t* buf, int buf_w, int buf_h, int p, int gx, int gy, int gw, int gh, uint16_t col) {
+    int x0 = gx * p;
+    int y0 = gy * p;
+    int x1 = (gx + gw) * p;
+    int y1 = (gy + gh) * p;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > buf_w) x1 = buf_w;
+    if (y1 > buf_h) y1 = buf_h;
+    for (int y = y0; y < y1; y++) {
+        uint16_t* row = buf + (y * buf_w);
+        for (int x = x0; x < x1; x++) {
+            row[x] = col;
+        }
+    }
+}
+
+static void mono_draw_tars_word_s(uint16_t* buf, int buf_w, int buf_h, int p, int gx, int gy, uint16_t col) {
+    static const uint8_t glyphs[4][5] = {
+        { 0b111, 0b010, 0b010, 0b010, 0b010 }, // T
+        { 0b010, 0b101, 0b111, 0b101, 0b101 }, // A
+        { 0b110, 0b101, 0b110, 0b101, 0b101 }, // R
+        { 0b011, 0b100, 0b010, 0b001, 0b110 }, // S
+    };
+    for (int ch = 0; ch < 4; ch++) {
+        int cx = gx + ch * 4;
+        for (int r = 0; r < 5; r++) {
+            uint8_t bits = glyphs[ch][r];
+            if (bits & 0b100) mono_px_s(buf, buf_w, buf_h, p, cx + 0, gy + r, 1, 1, col);
+            if (bits & 0b010) mono_px_s(buf, buf_w, buf_h, p, cx + 1, gy + r, 1, 1, col);
+            if (bits & 0b001) mono_px_s(buf, buf_w, buf_h, p, cx + 2, gy + r, 1, 1, col);
+        }
+    }
+}
+
+// Sol Ust Capraz (Top-Left Diagonal) Animated 1-Bit Pixel TARS Wake Overlay (24 KB PSRAM sprite!)
+static constexpr int WAKE_MONO_GW = 35;
+static constexpr int WAKE_MONO_GH = 22;
+static constexpr int WAKE_MONO_P  = 4;
+static constexpr int WAKE_MONO_W  = WAKE_MONO_GW * WAKE_MONO_P; // 140
+static constexpr int WAKE_MONO_H  = WAKE_MONO_GH * WAKE_MONO_P; // 88
+
+static uint16_t* s_wake_robot_buf = nullptr;
+static lv_image_dsc_t s_wake_robot_dsc = {
+    .header = {
+        .magic = LV_IMAGE_HEADER_MAGIC,
+        .cf = LV_COLOR_FORMAT_RGB565,
+        .flags = 0,
+        .w = WAKE_MONO_W,
+        .h = WAKE_MONO_H,
+        .stride = WAKE_MONO_W * 2,
+        .reserved_2 = 0
+    },
+    .data_size = WAKE_MONO_W * WAKE_MONO_H * 2,
+    .data = nullptr,
+    .reserved = NULL
+};
+
+static lv_obj_t* s_wake_pill = nullptr;       // Transparent top-left animated container
+static lv_obj_t* s_wake_robot_img = nullptr;  // 140x88 live 1-bit pixel TARS robot
+static lv_obj_t* s_wake_card = nullptr;       // Right-hand 1-bit terminal speech bubble
 static lv_obj_t* s_wake_pill_hdr = nullptr;
 static lv_obj_t* s_wake_pill_lbl = nullptr;
+static lv_obj_t* s_wake_prog_bar = nullptr;
+static lv_timer_t* s_wake_anim_timer = nullptr;
+static volatile bool s_wake_visible_target = false;
+static volatile int s_wake_vis_state = TARS_VIS_LISTEN;
+static volatile int s_wake_mic_pct = 0;
+static volatile bool s_wake_countdown_active = false;
+static volatile int64_t s_wake_listen_start_us = 0;
 
 // Short-term conversation memory (stored in PSRAM) for multi-turn Turkish context
 static char* s_hist_user[TARS_HIST_TURNS] = {nullptr, nullptr};
@@ -266,7 +375,8 @@ static bool tars_is_action_authorized(const char* p, const char* user_transcript
     }
 
     if (strcmp(p, "SALON_ON") == 0 || strcmp(p, "SALON_OFF") == 0 || strcmp(p, "SALON_TOGGLE") == 0) {
-        bool ok = (strstr(low, "isik") || strstr(low, "lamba") || strstr(low, "salon") ||
+        // NOTE: Include BOTH "isik" and "isig" (Turkish consonant mutation: "isigi ac/kapat")!
+        bool ok = (strstr(low, "isik") || strstr(low, "isig") || strstr(low, "lamba") || strstr(low, "salon") ||
                    strstr(low, "aydin") || strstr(low, "karanl") || strstr(low, "ampul") ||
                    strstr(low, "avize") || strstr(low, "spot") || strstr(low, "sinema") ||
                    strstr(low, "mola") || strstr(low, "oda") || strstr(low, "yak") || strstr(low, "sondur"));
@@ -279,9 +389,9 @@ static bool tars_is_action_authorized(const char* p, const char* user_transcript
     if (strncmp(p, "PC_SHUTDOWN", 11) == 0 || strcmp(p, "PC_SLEEP") == 0 ||
         strcmp(p, "PC_WAKE") == 0 || strcmp(p, "PC_LOCK") == 0 || strcmp(p, "PC_SCREEN_OFF") == 0) {
         bool ok = (strstr(low, "bilgisayar") || strstr(low, "pc") || strstr(low, "kasa") ||
-                   strstr(low, "ekran") || strstr(low, "monitor") || strstr(low, "kapat") ||
-                   strstr(low, "uyut") || strstr(low, "uyku") || strstr(low, "kilit") ||
-                   strstr(low, "uyandir") || strstr(low, "iptal") || strstr(low, "ac"));
+                   strstr(low, "sistem") || strstr(low, "ekran") || strstr(low, "monitor") ||
+                   strstr(low, "kapat") || strstr(low, "uyut") || strstr(low, "uyku") ||
+                   strstr(low, "kilit") || strstr(low, "uyandir") || strstr(low, "iptal") || strstr(low, "ac"));
         if (!ok) {
             ESP_LOGW(TAG, "SAFETY GATE: Blocked unsolicited PC power action [%s] for speech '%s'", p, low);
         }
@@ -305,25 +415,34 @@ static bool tars_is_action_authorized(const char* p, const char* user_transcript
     return true;
 }
 
-// Execute a single action command (called sequentially by multi-action chain dispatcher!)
-static bool tars_execute_single_action(const char* raw_item, const char* user_transcript_ascii, char* out_badge, size_t max_badge) {
-    if (!raw_item) return false;
+enum TarsActionOutcome {
+    TARS_ACT_NONE = 0,
+    TARS_ACT_OK = 1,
+    TARS_ACT_PC_UNREACHABLE = 2,
+    TARS_ACT_TV_UNREACHABLE = 3,
+};
+
+// Execute a single action command honestly (never claims success if PC/TV is unreachable!)
+static TarsActionOutcome tars_execute_single_action(const char* raw_item, const char* user_transcript_ascii,
+                                                    char* out_badge, size_t max_badge) {
+    if (!raw_item) return TARS_ACT_NONE;
     char cmd[220];
     cmd[0] = '\0';
     const char* s = raw_item;
     while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') s++;
     size_t len = strlen(s);
     while (len > 0 && (s[len - 1] == ' ' || s[len - 1] == '\t' || s[len - 1] == '\r' || s[len - 1] == '\n')) len--;
-    if (len == 0) return false;
+    if (len == 0) return TARS_ACT_NONE;
     if (len >= sizeof(cmd)) len = sizeof(cmd) - 1;
     memcpy(cmd, s, len);
     cmd[len] = '\0';
 
     const char* p = cmd;
     if (!tars_is_action_authorized(p, user_transcript_ascii)) {
-        return false;
+        return TARS_ACT_NONE;
     }
     ESP_LOGI(TAG, "ACTION DISPATCHED: [%s]", p);
+
     if (strcmp(p, "SALON_ON") == 0) {
         pc_control_esphome("/switch/salon_isigi/turn_on");
         strncpy(out_badge, "SALON ISIGI ACILDI", max_badge - 1);
@@ -340,25 +459,43 @@ static bool tars_execute_single_action(const char* raw_item, const char* user_tr
         if (pc_control_get_stats(s_live_pc_telemetry, sizeof(s_live_pc_telemetry))) {
             snprintf(out_badge, max_badge - 1, "PC: %.48s", s_live_pc_telemetry);
         } else {
-            strncpy(s_live_pc_telemetry, "PC ulasilamadi (UZ_PC_Agent kapali olabilir)", sizeof(s_live_pc_telemetry) - 1);
-            strncpy(out_badge, "PC DURUM ALINAMADI", max_badge - 1);
+            s_live_pc_telemetry[0] = '\0';
+            strncpy(out_badge, "PC ERISILEMEDI", max_badge - 1);
+            out_badge[max_badge - 1] = '\0';
+            return TARS_ACT_PC_UNREACHABLE;
         }
     } else if (strcmp(p, "PC_MODE_BREAK") == 0) {
-        pc_control_send("PC_MODE_BREAK");
+        bool ok = pc_control_send("PC_MODE_BREAK");
         pc_control_esphome("/switch/salon_isigi/turn_on");
-        strncpy(out_badge, "MOD: MUTFAK MOLASI", max_badge - 1);
+        strncpy(out_badge, ok ? "MOD: MUTFAK MOLASI" : "ISIK OK / PC ERISILEMEDI", max_badge - 1);
     } else if (strcmp(p, "PC_MODE_MOVIE") == 0) {
-        pc_control_send("PC_MODE_MOVIE");
+        bool ok = pc_control_send("PC_MODE_MOVIE");
         pc_control_esphome("/switch/salon_isigi/turn_off");
-        strncpy(out_badge, "MOD: SINEMA", max_badge - 1);
+        strncpy(out_badge, ok ? "MOD: SINEMA" : "ISIK OK / PC ERISILEMEDI", max_badge - 1);
     } else if (strcmp(p, "PC_MODE_STUDY") == 0) {
-        pc_control_send("PC_MODE_STUDY");
+        if (!pc_control_send("PC_MODE_STUDY")) {
+            strncpy(out_badge, "PC ERISILEMEDI", max_badge - 1);
+            out_badge[max_badge - 1] = '\0';
+            return TARS_ACT_PC_UNREACHABLE;
+        }
         strncpy(out_badge, "MOD: DERS / ODAK", max_badge - 1);
     } else if (strcmp(p, "PC_MODE_GAME") == 0) {
-        pc_control_send("PC_MODE_GAME");
-        strncpy(out_badge, "MOD: OYUN", max_badge - 1);
+        if (s_tars_instance) s_tars_instance->set_turbo_mode(true);
+        bool ok = pc_control_send("PC_MODE_GAME");
+        strncpy(out_badge, ok ? "MOD: OYUN (PC + TURBO)" : "TURBO AKTIF (PC KAPALI)", max_badge - 1);
+    } else if (strcmp(p, "TARS_TURBO_ON") == 0) {
+        if (s_tars_instance) s_tars_instance->set_turbo_mode(true);
+        strncpy(out_badge, "TARS TURBO KIRMIZI AKTIF", max_badge - 1);
+    } else if (strcmp(p, "TARS_TURBO_OFF") == 0) {
+        if (s_tars_instance) s_tars_instance->set_turbo_mode(false);
+        strncpy(out_badge, "TARS NORMAL MOD", max_badge - 1);
     } else if (strncmp(p, "PC_", 3) == 0) {
         bool ok = pc_control_send(p);
+        if (!ok) {
+            snprintf(out_badge, max_badge - 1, "PC ERISILEMEDI (%s)", pc_control_get_cached_ip());
+            out_badge[max_badge - 1] = '\0';
+            return TARS_ACT_PC_UNREACHABLE;
+        }
         if (strcmp(p, "PC_SLEEP") == 0) strncpy(out_badge, "PC UYKUYA ALINDI", max_badge - 1);
         else if (strcmp(p, "PC_LOCK") == 0) strncpy(out_badge, "PC KILITLENDI", max_badge - 1);
         else if (strcmp(p, "PC_SCREEN_OFF") == 0) strncpy(out_badge, "MONITOR KAPATILDI", max_badge - 1);
@@ -408,9 +545,14 @@ static bool tars_execute_single_action(const char* raw_item, const char* user_tr
         else if (strstr(p, "PC_MINIMIZE_ALL")) strncpy(out_badge, "MASAUSTU", max_badge - 1);
         else if (strstr(p, "PC_FULLSCREEN")) strncpy(out_badge, "TAM EKRAN", max_badge - 1);
         else if (strstr(p, "PC_SCREENSHOT")) strncpy(out_badge, "EKRAN GORUNTUSU", max_badge - 1);
-        else snprintf(out_badge, max_badge - 1, "PC (%s)", ok ? "OK" : "ERISILEMEDI");
+        else strncpy(out_badge, "PC KOMUTU OK", max_badge - 1);
     } else if (strncmp(p, "TV_", 3) == 0) {
         bool ok = tv_control_send(p);
+        if (!ok) {
+            strncpy(out_badge, "TV ERISILEMEDI", max_badge - 1);
+            out_badge[max_badge - 1] = '\0';
+            return TARS_ACT_TV_UNREACHABLE;
+        }
         if (strcmp(p, "TV_POWER") == 0) strncpy(out_badge, "TV GUC", max_badge - 1);
         else if (strcmp(p, "TV_SLEEP") == 0) strncpy(out_badge, "TV KAPATILDI", max_badge - 1);
         else if (strcmp(p, "TV_WAKE") == 0) strncpy(out_badge, "TV ACILDI", max_badge - 1);
@@ -435,7 +577,7 @@ static bool tars_execute_single_action(const char* raw_item, const char* user_tr
         else if (strcmp(p, "TV_OPEN_PRIME") == 0) strncpy(out_badge, "TV PRIME VIDEO", max_badge - 1);
         else if (strcmp(p, "TV_OPEN_DISNEY") == 0) strncpy(out_badge, "TV DISNEY+", max_badge - 1);
         else if (strncmp(p, "TV_YOUTUBE_PLAY:", 16) == 0) strncpy(out_badge, "TV YOUTUBE OYNAT", max_badge - 1);
-        else snprintf(out_badge, max_badge - 1, "TV (%s)", ok ? "OK" : "ERISILEMEDI");
+        else strncpy(out_badge, "TV KOMUTU OK", max_badge - 1);
     } else if (strncmp(p, "HUMOR_SET:", 10) == 0) {
         int new_h = atoi(p + 10);
         if (new_h >= 0 && new_h <= 100 && s_tars_instance) {
@@ -443,15 +585,21 @@ static bool tars_execute_single_action(const char* raw_item, const char* user_tr
         }
         snprintf(out_badge, max_badge - 1, "MIZAH %%%d YAPILDI", new_h);
     } else {
-        return false;
+        return TARS_ACT_NONE;
     }
     out_badge[max_badge - 1] = '\0';
-    return true;
+    return TARS_ACT_OK;
 }
 
-// Execute 1 or MULTIPLE chained actions separated by ';' (e.g. [ACTION: SALON_OFF; PC_VOL_SET:60; PC_GOOGLE_SEARCH:Starship])
-static bool tars_fire_action_tag(const char* tag_inner, const char* user_transcript_ascii, char* out_action_badge, size_t max_badge) {
+// Execute 1 or MULTIPLE chained actions separated by ';' (tracks PC/TV reachability honestly!)
+static bool tars_fire_action_tag(const char* tag_inner, const char* user_transcript_ascii,
+                                 char* out_action_badge, size_t max_badge,
+                                 bool* out_pc_unreachable = nullptr,
+                                 bool* out_tv_unreachable = nullptr) {
+    if (out_pc_unreachable) *out_pc_unreachable = false;
+    if (out_tv_unreachable) *out_tv_unreachable = false;
     if (!tag_inner || tag_inner[0] == '\0') return false;
+
     char buf[256];
     strncpy(buf, tag_inner, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
@@ -466,7 +614,10 @@ static bool tars_fire_action_tag(const char* tag_inner, const char* user_transcr
         if (sep) *sep = '\0';
 
         char one_badge[64] = {0};
-        if (tars_execute_single_action(cur, user_transcript_ascii, one_badge, sizeof(one_badge))) {
+        TarsActionOutcome outcome = tars_execute_single_action(cur, user_transcript_ascii, one_badge, sizeof(one_badge));
+        if (outcome != TARS_ACT_NONE) {
+            if (outcome == TARS_ACT_PC_UNREACHABLE && out_pc_unreachable) *out_pc_unreachable = true;
+            if (outcome == TARS_ACT_TV_UNREACHABLE && out_tv_unreachable) *out_tv_unreachable = true;
             if (executed > 0 && strlen(combined) + 3 < sizeof(combined)) {
                 strncat(combined, " + ", sizeof(combined) - strlen(combined) - 1);
             }
@@ -530,71 +681,359 @@ static void tars_play_acoustic_response(bool is_action) {
     bsp_audio_unlock();
 }
 
-static void on_wake_pill_clicked(lv_event_t* e) {
-    s_wake_pill_dismissed = true;
-    if (s_wake_pill) {
+static void wake_render_robot_frame(void) {
+    if (!s_wake_pill || !s_wake_robot_img || !s_wake_robot_buf) return;
+    if (!s_wake_visible_target || lv_obj_has_flag(s_wake_pill, LV_OBJ_FLAG_HIDDEN)) return;
+    if (!display_manager_is_on()) return;
+
+    tars_ensure_shared_prefs();
+    bool turbo = (s_tars_instance && s_tars_instance->is_turbo_mode());
+    const TarsMonoPalette& pal = turbo ? kTarsTurboPal : kTarsPalettes[s_shared_ui_tone];
+
+    const uint16_t c_black = 0x0000;
+    const uint16_t c_white = 0xFFFF;
+    const uint16_t c_fg    = tars_hex565(pal.fg);
+    const uint16_t c_mid   = tars_hex565(pal.mid);
+    const uint16_t c_dim   = tars_hex565(pal.dim);
+    const uint16_t c_acc   = tars_hex565(pal.acc);
+
+    memset(s_wake_robot_buf, 0, WAKE_MONO_W * WAKE_MONO_H * sizeof(uint16_t));
+
+    int64_t now_us = esp_timer_get_time();
+    float t = (float)(now_us / 1000LL) * 0.001f;
+    int vis = s_wake_vis_state;
+    float energy = (float)s_wake_mic_pct / 100.0f;
+    if (vis == TARS_VIS_LISTEN && energy < 0.20f) energy = 0.20f;
+
+    const int widths[4] = { 7, 8, 8, 7 }; // 33 cols wide -> centered inside 35 cols (startX = 1)
+    const int sxList[4] = { 1, 9, 18, 27 };
+    const int baseY = 1;
+    const int slabH = 20;
+
+    for (int i = 0; i < 4; i++) {
+        int yShift = 0;
+        if (vis == TARS_VIS_LISTEN) {
+            int amp = (int)lroundf(energy * 1.8f);
+            if (amp > 2) amp = 2;
+            yShift = (i == 0 || i == 3) ? -amp : (int)lroundf(sinf(t * 12.0f + (float)i) * 0.6f);
+        } else if (vis == TARS_VIS_THINK) {
+            yShift = (int)lroundf(sinf(t * 6.0f + (float)i * 1.4f) * 1.6f);
+        } else if (turbo) {
+            yShift = (((int)(t * 14.0f) + i) % 2 == 0) ? -1 : 1;
+        }
+        int sx = sxList[i];
+        int sw = widths[i];
+        int sy = baseY + yShift;
+        if (sy < 0) sy = 0;
+        if (sy + slabH > WAKE_MONO_GH) sy = WAKE_MONO_GH - slabH;
+
+        mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, sx, sy, sw, slabH, c_fg);
+        mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, sx + sw - 1, sy, 1, slabH, c_mid);
+        mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, sx + 1, sy, sw - 3, 1, c_white);
+        mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, sx, sy + 14, sw, 1, c_black);
+
+        uint16_t dotCol = turbo ? c_acc : c_black;
+        if (i == 0 || i == 3) {
+            mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, sx + 2, sy + 4, 1, 1, dotCol);
+            mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, sx + 4, sy + 4, 1, 1, dotCol);
+            mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, sx + 2, sy + 7, 1, 1, dotCol);
+            mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, sx + 4, sy + 10, 1, 1, dotCol);
+        }
+        mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, sx + 2, sy + 16, 1, 3, c_mid);
+        mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, sx + sw - 3, sy + 16, 1, 3, c_mid);
+    }
+
+    if (turbo) {
+        for (int g = 0; g < 3; g++) {
+            mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, sxList[g] + widths[g], baseY + 2, 1, slabH - 4, c_acc);
+        }
+    }
+
+    // Recessed Chest LCD (17x10 across slabs 1 & 2)
+    const int lx = sxList[1];
+    const int ly = 4;
+    const int lw = 17;
+    const int lh = 10;
+    mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, lx, ly, lw, lh, c_black);
+    mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, lx, ly, lw, 1, c_mid);
+
+    if (vis == TARS_VIS_LISTEN) {
+        for (int b = 0; b < 7; b++) {
+            float wave = 0.45f + 0.55f * fabsf(sinf(t * 13.0f + (float)b * 0.9f));
+            int bh = (int)lroundf(energy * 7.8f * wave);
+            if (bh < 1) bh = 1;
+            if (bh > 7) bh = 7;
+            mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, lx + 2 + b * 2, ly + lh - 1 - bh, 1, bh, (bh >= 5) ? c_acc : c_fg);
+        }
+    } else if (vis == TARS_VIS_THINK) {
+        int step = ((int)(t * 8.0f)) % 4;
+        int cx = lx + lw / 2;
+        int cy = ly + lh / 2;
+        mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, cx, cy, 1, 1, c_acc);
+        if (step == 0) {
+            mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, cx, cy - 2, 1, 2, c_fg);
+            mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, cx, cy + 1, 1, 2, c_fg);
+        } else if (step == 1) {
+            mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, cx + 1, cy - 1, 1, 1, c_fg);
+            mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, cx + 2, cy - 2, 1, 1, c_fg);
+            mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, cx - 1, cy + 1, 1, 1, c_fg);
+            mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, cx - 2, cy + 2, 1, 1, c_fg);
+        } else if (step == 2) {
+            mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, cx - 2, cy, 2, 1, c_fg);
+            mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, cx + 1, cy, 2, 1, c_fg);
+        } else {
+            mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, cx - 1, cy - 1, 1, 1, c_fg);
+            mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, cx - 2, cy - 2, 1, 1, c_fg);
+            mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, cx + 1, cy + 1, 1, 1, c_fg);
+            mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, cx + 2, cy + 2, 1, 1, c_fg);
+        }
+    } else if (turbo) {
+        int mid = lx + lw / 2;
+        mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, mid - 6, ly + 2, 2, 1, c_acc);
+        mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, mid - 5, ly + 3, 3, 2, c_fg);
+        mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, mid + 4, ly + 2, 2, 1, c_acc);
+        mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, mid + 2, ly + 3, 3, 2, c_fg);
+        int span = lw - 6;
+        int raw = ((int)(t * 16.0f)) % (span * 2);
+        int phase = (raw < span) ? raw : (span * 2 - raw);
+        mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, lx + 2 + phase, ly + lh - 2, 3, 1, c_acc);
+    } else {
+        mono_draw_tars_word_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, lx + 1, ly + 1, c_fg);
+        if (vis == TARS_VIS_REPLY) {
+            for (int b = 0; b < 7; b++) {
+                int bh = (sinf(t * 14.0f + (float)b * 1.6f) > 0.1f) ? 2 : 1;
+                mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, lx + 2 + b * 2, ly + lh - bh, 1, bh, c_acc);
+            }
+        } else {
+            mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, lx + 1, ly + lh - 2, lw - 2, 1, c_dim);
+            int sweep = ((int)(t * 4.0f)) % (lw - 4);
+            mono_px_s(s_wake_robot_buf, WAKE_MONO_W, WAKE_MONO_H, WAKE_MONO_P, lx + 1 + sweep, ly + lh - 2, 3, 1, c_acc);
+        }
+    }
+
+    lv_obj_invalidate(s_wake_robot_img);
+
+    // Update live 4.5s countdown progress bar when waiting for voice
+    if (s_wake_prog_bar) {
+        if (s_wake_countdown_active) {
+            int64_t elapsed_ms = (now_us - s_wake_listen_start_us) / 1000LL;
+            int rem_pct = 100 - (int)((elapsed_ms * 100LL) / 4500LL);
+            if (rem_pct < 0) rem_pct = 0;
+            if (rem_pct > 100) rem_pct = 100;
+            lv_obj_clear_flag(s_wake_prog_bar, LV_OBJ_FLAG_HIDDEN);
+            lv_bar_set_value(s_wake_prog_bar, rem_pct, LV_ANIM_OFF);
+        } else {
+            lv_obj_add_flag(s_wake_prog_bar, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
+static void on_wake_anim_timer(lv_timer_t* timer) {
+    (void)timer;
+    wake_render_robot_frame();
+}
+
+static void on_wake_exit_completed(lv_anim_t* a) {
+    (void)a;
+    if (!s_wake_visible_target && s_wake_pill) {
         lv_obj_add_flag(s_wake_pill, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
-// Show / update floating TARS Card positioned cleanly BELOW the curved top bezel & status bar (y = 88)
-static void update_wake_pill_ui(const char* header_text, const char* body_text, uint32_t accent_hex, bool visible) {
+static void wake_start_diagonal_exit_locked(bool immediate) {
+    s_wake_visible_target = false;
+    s_wake_countdown_active = false;
+    if (s_wake_anim_timer) {
+        lv_timer_delete(s_wake_anim_timer);
+        s_wake_anim_timer = nullptr;
+    }
+    if (!s_wake_pill) return;
+
+    lv_anim_delete(s_wake_pill, nullptr);
+    if (immediate || lv_obj_has_flag(s_wake_pill, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_add_flag(s_wake_pill, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    int32_t cur_x = lv_obj_get_x(s_wake_pill);
+    int32_t cur_y = lv_obj_get_y(s_wake_pill);
+
+    // Smooth Up-Left Diagonal Retraction (slides cleanly back out of top-left corner!)
+    lv_anim_t ax;
+    lv_anim_init(&ax);
+    lv_anim_set_var(&ax, s_wake_pill);
+    lv_anim_set_exec_cb(&ax, (lv_anim_exec_xcb_t)lv_obj_set_x);
+    lv_anim_set_values(&ax, cur_x, -280);
+    lv_anim_set_duration(&ax, 300);
+    lv_anim_set_path_cb(&ax, lv_anim_path_ease_in);
+    lv_anim_start(&ax);
+
+    lv_anim_t ay;
+    lv_anim_init(&ay);
+    lv_anim_set_var(&ay, s_wake_pill);
+    lv_anim_set_exec_cb(&ay, (lv_anim_exec_xcb_t)lv_obj_set_y);
+    lv_anim_set_values(&ay, cur_y, -170);
+    lv_anim_set_duration(&ay, 300);
+    lv_anim_set_path_cb(&ay, lv_anim_path_ease_in);
+    lv_anim_set_completed_cb(&ay, on_wake_exit_completed);
+    lv_anim_start(&ay);
+}
+
+static void on_wake_pill_clicked(lv_event_t* e) {
+    (void)e;
+    s_wake_pill_dismissed = true;
+    wake_start_diagonal_exit_locked(false);
+}
+
+// Show / update Sol Ust Capraz (Top-Left Diagonal) Animated 1-Bit Pixel TARS Wake Overlay
+static void update_wake_pill_ui(const char* header_text, const char* body_text, uint32_t accent_hex,
+                                bool visible, bool immediate = false) {
     if (!bsp_display_lock(150)) return;
     if (!visible) {
-        if (s_wake_pill) {
-            lv_obj_del(s_wake_pill);
-            s_wake_pill = nullptr;
-            s_wake_pill_hdr = nullptr;
-            s_wake_pill_lbl = nullptr;
-        }
+        wake_start_diagonal_exit_locked(immediate);
         bsp_display_unlock();
         return;
     }
 
+    tars_ensure_shared_prefs();
+    bool turbo = (s_tars_instance && s_tars_instance->is_turbo_mode());
+    const TarsMonoPalette& pal = turbo ? kTarsTurboPal : kTarsPalettes[s_shared_ui_tone];
+
+    if (!s_wake_robot_buf) {
+        s_wake_robot_buf = (uint16_t*)heap_caps_calloc(WAKE_MONO_W * WAKE_MONO_H, sizeof(uint16_t),
+                                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s_wake_robot_buf) {
+            s_wake_robot_dsc.data = (const uint8_t*)s_wake_robot_buf;
+        }
+    }
+
     if (!s_wake_pill) {
         s_wake_pill = lv_obj_create(lv_layer_top());
-        lv_obj_set_width(s_wake_pill, 364);
+        lv_obj_set_width(s_wake_pill, 374);
         lv_obj_set_height(s_wake_pill, LV_SIZE_CONTENT);
-        lv_obj_set_style_min_height(s_wake_pill, 78, 0);
-        lv_obj_set_style_max_height(s_wake_pill, 280, 0);
-        lv_obj_align(s_wake_pill, LV_ALIGN_TOP_MID, 0, 88);
-        lv_obj_set_style_radius(s_wake_pill, 22, 0);
-        lv_obj_set_style_bg_color(s_wake_pill, lv_color_hex(0x0B0F17), 0);
-        lv_obj_set_style_bg_opa(s_wake_pill, LV_OPA_90, 0);
-        lv_obj_set_style_border_width(s_wake_pill, 2, 0);
+        lv_obj_set_style_min_height(s_wake_pill, 96, 0);
+        lv_obj_set_style_max_height(s_wake_pill, 240, 0);
+        lv_obj_set_pos(s_wake_pill, -260, -150);
+        lv_obj_set_style_bg_opa(s_wake_pill, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(s_wake_pill, 0, 0);
+        lv_obj_set_style_pad_all(s_wake_pill, 0, 0);
         lv_obj_set_style_shadow_width(s_wake_pill, 0, 0);
-        lv_obj_set_style_pad_hor(s_wake_pill, 16, 0);
-        lv_obj_set_style_pad_ver(s_wake_pill, 12, 0);
-        lv_obj_set_style_pad_row(s_wake_pill, 6, 0);
-        lv_obj_set_flex_flow(s_wake_pill, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_flex_align(s_wake_pill, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-        lv_obj_set_scrollbar_mode(s_wake_pill, LV_SCROLLBAR_MODE_AUTO);
+        lv_obj_clear_flag(s_wake_pill, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(s_wake_pill, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(s_wake_pill, on_wake_pill_clicked, LV_EVENT_CLICKED, nullptr);
+        lv_obj_add_flag(s_wake_pill, LV_OBJ_FLAG_HIDDEN);
 
-        s_wake_pill_hdr = lv_label_create(s_wake_pill);
+        // Left: 140x88 Live 1-Bit Pixel TARS Monolith Sprite
+        if (s_wake_robot_buf) {
+            s_wake_robot_img = lv_image_create(s_wake_pill);
+            lv_image_set_src(s_wake_robot_img, &s_wake_robot_dsc);
+            lv_obj_set_size(s_wake_robot_img, WAKE_MONO_W + 4, WAKE_MONO_H + 4);
+            lv_obj_set_pos(s_wake_robot_img, 0, 2);
+            lv_obj_set_style_bg_color(s_wake_robot_img, lv_color_hex(0x000000), 0);
+            lv_obj_set_style_bg_opa(s_wake_robot_img, LV_OPA_COVER, 0);
+            lv_obj_set_style_border_width(s_wake_robot_img, 2, 0);
+            lv_obj_set_style_radius(s_wake_robot_img, 6, 0);
+            lv_obj_set_style_pad_all(s_wake_robot_img, 0, 0);
+            lv_obj_add_flag(s_wake_robot_img, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(s_wake_robot_img, on_wake_pill_clicked, LV_EVENT_CLICKED, nullptr);
+        }
+
+        // Right: 1-Bit Dark Terminal Speech Card + 4.5s Countdown Rail
+        s_wake_card = lv_obj_create(s_wake_pill);
+        lv_obj_set_pos(s_wake_card, 150, 2);
+        lv_obj_set_width(s_wake_card, 224);
+        lv_obj_set_height(s_wake_card, LV_SIZE_CONTENT);
+        lv_obj_set_style_min_height(s_wake_card, 92, 0);
+        lv_obj_set_style_max_height(s_wake_card, 230, 0);
+        lv_obj_set_style_radius(s_wake_card, 8, 0);
+        lv_obj_set_style_bg_color(s_wake_card, lv_color_hex(0x05070B), 0);
+        lv_obj_set_style_bg_opa(s_wake_card, LV_OPA_90, 0);
+        lv_obj_set_style_border_width(s_wake_card, 2, 0);
+        lv_obj_set_style_shadow_width(s_wake_card, 0, 0);
+        lv_obj_set_style_pad_hor(s_wake_card, 10, 0);
+        lv_obj_set_style_pad_ver(s_wake_card, 8, 0);
+        lv_obj_set_style_pad_row(s_wake_card, 5, 0);
+        lv_obj_set_flex_flow(s_wake_card, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(s_wake_card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+        lv_obj_set_scrollbar_mode(s_wake_card, LV_SCROLLBAR_MODE_AUTO);
+        lv_obj_add_flag(s_wake_card, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(s_wake_card, on_wake_pill_clicked, LV_EVENT_CLICKED, nullptr);
+
+        s_wake_pill_hdr = lv_label_create(s_wake_card);
         lv_obj_set_width(s_wake_pill_hdr, LV_PCT(100));
         lv_obj_set_style_text_font(s_wake_pill_hdr, &lv_font_montserrat_12, 0);
         lv_obj_set_style_text_align(s_wake_pill_hdr, LV_TEXT_ALIGN_LEFT, 0);
 
-        s_wake_pill_lbl = lv_label_create(s_wake_pill);
+        s_wake_pill_lbl = lv_label_create(s_wake_card);
         lv_obj_set_width(s_wake_pill_lbl, LV_PCT(100));
         lv_label_set_long_mode(s_wake_pill_lbl, LV_LABEL_LONG_WRAP);
-        lv_obj_set_style_text_font(s_wake_pill_lbl, &lv_font_montserrat_16, 0);
-        lv_obj_set_style_text_color(s_wake_pill_lbl, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(s_wake_pill_lbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(s_wake_pill_lbl, lv_color_hex(0xF8FAFC), 0);
         lv_obj_set_style_text_align(s_wake_pill_lbl, LV_TEXT_ALIGN_LEFT, 0);
+
+        s_wake_prog_bar = lv_bar_create(s_wake_card);
+        lv_obj_set_size(s_wake_prog_bar, LV_PCT(100), 4);
+        lv_bar_set_range(s_wake_prog_bar, 0, 100);
+        lv_bar_set_value(s_wake_prog_bar, 100, LV_ANIM_OFF);
+        lv_obj_set_style_radius(s_wake_prog_bar, 2, 0);
+        lv_obj_set_style_radius(s_wake_prog_bar, 2, LV_PART_INDICATOR);
     }
 
-    lv_obj_clear_flag(s_wake_pill, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_style_border_color(s_wake_pill, lv_color_hex(accent_hex), 0);
+    // Apply current 1-bit palette colors (auto-syncs with saved tone & Turbo Red!)
+    uint32_t hdr_col = (accent_hex == 0x00E676 || accent_hex == 0xFFA000) ? pal.acc : accent_hex;
+    if (s_wake_robot_img) {
+        lv_obj_set_style_border_color(s_wake_robot_img, lv_color_hex(pal.mid), 0);
+    }
+    if (s_wake_card) {
+        lv_obj_set_style_border_color(s_wake_card, lv_color_hex(pal.mid), 0);
+    }
     if (s_wake_pill_hdr) {
-        lv_obj_set_style_text_color(s_wake_pill_hdr, lv_color_hex(accent_hex), 0);
+        lv_obj_set_style_text_color(s_wake_pill_hdr, lv_color_hex(hdr_col), 0);
         lv_label_set_text(s_wake_pill_hdr, header_text ? header_text : "TARS");
     }
     if (s_wake_pill_lbl && body_text) {
         lv_label_set_text(s_wake_pill_lbl, body_text);
     }
-    lv_obj_scroll_to_y(s_wake_pill, 0, LV_ANIM_OFF);
+    if (s_wake_prog_bar) {
+        lv_obj_set_style_bg_color(s_wake_prog_bar, lv_color_hex(pal.dim), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_wake_prog_bar, lv_color_hex(pal.acc), LV_PART_INDICATOR);
+    }
+    if (s_wake_card) {
+        lv_obj_scroll_to_y(s_wake_card, 0, LV_ANIM_OFF);
+    }
+
+    bool needs_enter_anim = (!s_wake_visible_target || lv_obj_has_flag(s_wake_pill, LV_OBJ_FLAG_HIDDEN));
+    s_wake_visible_target = true;
+
+    if (needs_enter_anim) {
+        lv_anim_delete(s_wake_pill, nullptr);
+        lv_obj_set_pos(s_wake_pill, -260, -150);
+        lv_obj_clear_flag(s_wake_pill, LV_OBJ_FLAG_HIDDEN);
+
+        // Sol Ust Capraz Entrance Animation (-260,-150) -> (18,52) with spring overshoot!
+        lv_anim_t ax;
+        lv_anim_init(&ax);
+        lv_anim_set_var(&ax, s_wake_pill);
+        lv_anim_set_exec_cb(&ax, (lv_anim_exec_xcb_t)lv_obj_set_x);
+        lv_anim_set_values(&ax, -260, 18);
+        lv_anim_set_duration(&ax, 380);
+        lv_anim_set_path_cb(&ax, lv_anim_path_overshoot);
+        lv_anim_start(&ax);
+
+        lv_anim_t ay;
+        lv_anim_init(&ay);
+        lv_anim_set_var(&ay, s_wake_pill);
+        lv_anim_set_exec_cb(&ay, (lv_anim_exec_xcb_t)lv_obj_set_y);
+        lv_anim_set_values(&ay, -150, 52);
+        lv_anim_set_duration(&ay, 380);
+        lv_anim_set_path_cb(&ay, lv_anim_path_overshoot);
+        lv_anim_start(&ay);
+    }
+
+    wake_render_robot_frame();
+    if (!s_wake_anim_timer) {
+        s_wake_anim_timer = lv_timer_create(on_wake_anim_timer, 90, nullptr); // ~11 FPS crisp wake robot EQ
+    }
     bsp_display_unlock();
 }
 
@@ -676,16 +1115,14 @@ static void tars_extract_and_strip_actions(const char* raw_reply,
     }
 }
 
-// Parse & Execute [ACTION: ...] tags cleanly AFTER Groq TLS finishes (zero nested sockets, staggered power draw!)
-static void tars_finalize_reply(const char* raw_reply, bool action_already_fired,
+// Finalize & execute structured actions honestly AFTER Groq JSON returns (zero nested TLS, truthful error feedback!)
+static void tars_finalize_reply(const char* raw_reply, const char* structured_actions,
                                 char* out_clean_reply, size_t max_reply,
                                 char* out_action_badge, size_t max_badge,
                                 const char* user_transcript_ascii = nullptr) {
     out_clean_reply[0] = '\0';
-    if (!action_already_fired) {
-        strncpy(out_action_badge, "EYLEM: YOK (SOHBET)", max_badge - 1);
-        out_action_badge[max_badge - 1] = '\0';
-    }
+    strncpy(out_action_badge, "EYLEM: YOK (SOHBET)", max_badge - 1);
+    out_action_badge[max_badge - 1] = '\0';
     if (!raw_reply) return;
 
     char act_cmd[256] = {0};
@@ -693,11 +1130,32 @@ static void tars_finalize_reply(const char* raw_reply, bool action_already_fired
     if (!clean_utf8) clean_utf8 = (char*)calloc(1, TARS_TEXT_CAP);
     if (!clean_utf8) return;
 
-    tars_extract_and_strip_actions(raw_reply, act_cmd, sizeof(act_cmd), clean_utf8, TARS_TEXT_CAP);
+    if (structured_actions && structured_actions[0] != '\0') {
+        strncpy(act_cmd, structured_actions, sizeof(act_cmd) - 1);
+        strncpy(clean_utf8, raw_reply, TARS_TEXT_CAP - 1);
+    } else {
+        tars_extract_and_strip_actions(raw_reply, act_cmd, sizeof(act_cmd), clean_utf8, TARS_TEXT_CAP);
+    }
 
-    bool action_triggered = action_already_fired;
-    if (!action_already_fired && act_cmd[0] != '\0') {
-        action_triggered = tars_fire_action_tag(act_cmd, user_transcript_ascii, out_action_badge, max_badge);
+    bool pc_unreachable = false;
+    bool tv_unreachable = false;
+    bool action_triggered = false;
+    if (act_cmd[0] != '\0') {
+        action_triggered = tars_fire_action_tag(act_cmd, user_transcript_ascii, out_action_badge, max_badge,
+                                                &pc_unreachable, &tv_unreachable);
+    }
+
+    // Honest reply overrides: NEVER gaslight user if PC/TV failed or if real PC stats were fetched!
+    if (pc_unreachable) {
+        snprintf(clean_utf8, TARS_TEXT_CAP - 1,
+                 "Bilgisayara ulasilamadi (%s:5000). UZ_PC_Agent ve Wi-Fi agini kontrol et Eymen.",
+                 pc_control_get_cached_ip());
+    } else if (tv_unreachable) {
+        snprintf(clean_utf8, TARS_TEXT_CAP - 1,
+                 "Televizyona ulasilamadi. TV'nin acik ve ayni Wi-Fi aginda oldugunu kontrol et Eymen.");
+    } else if (s_live_pc_telemetry[0] != '\0') {
+        // Real live CPU/RAM/Disk telemetry replaces speculative LLM numbers!
+        snprintf(clean_utf8, TARS_TEXT_CAP - 1, "PC Canli Durum: %s", s_live_pc_telemetry);
     }
 
     // Send full UTF-8 spoken response to phone over BLE (serialized on ble_evt_wrk with MTU clamp)
@@ -712,12 +1170,6 @@ static void tars_finalize_reply(const char* raw_reply, bool action_already_fired
 
     if (strlen(out_clean_reply) == 0 && action_triggered) {
         strncpy(out_clean_reply, "Komut uygulandi Eymen.", max_reply - 1);
-    }
-    if (s_live_pc_telemetry[0] != '\0') {
-        size_t cur_l = strlen(out_clean_reply);
-        if (cur_l + strlen(s_live_pc_telemetry) + 12 < max_reply) {
-            snprintf(out_clean_reply + cur_l, max_reply - cur_l, "\n[PC] %s", s_live_pc_telemetry);
-        }
     }
 
     // Stagger motor haptic and speaker PA strictly so 5V audio boost + vibration NEVER overlap (zero brownout!)
@@ -852,159 +1304,28 @@ static size_t tars_encode_ulaw_wav(int16_t* pcm, size_t num_samples, uint8_t* ou
     return TARS_ULAW_HDR_BYTES + data_size;
 }
 
-// Persistent HTTP/SSE Context for Groq Keep-Alive Client
-enum GroqHttpMode {
-    GROQ_MODE_DISCARD = 0,
-    GROQ_MODE_JSON = 1,
-    GROQ_MODE_SSE_STREAM = 2,
-};
-
+// Persistent HTTP JSON Context for Groq Keep-Alive Client (v4.0 Strict Structured JSON)
 struct GroqHttpCtx {
-    GroqHttpMode mode;
     char* json_buf;
     size_t json_len;
     size_t json_cap;
-
-    // SSE Streaming state
-    char* sse_line_buf;
-    size_t sse_line_len;
-    size_t sse_line_cap;
-
-    char* reply_utf8;
-    size_t reply_len;
-    size_t reply_cap;
-    char* ui_ascii_tmp;
-
-    bool is_wake_window;
-    bool action_checked;
-    bool action_fired;
-    size_t spoken_offset;
-    char action_badge[64];
-
-    int64_t chat_start_us;
-    int64_t first_token_us;
-    int64_t action_us;
-    int64_t last_ui_push_us;
-    size_t last_ui_len;
 };
 
 static GroqHttpCtx s_http_ctx = {};
 
-static void tars_process_sse_line(GroqHttpCtx* ctx, const char* line) {
-    if (strncmp(line, "data: ", 6) != 0) return;
-    const char* payload = line + 6;
-    if (strcmp(payload, "[DONE]") == 0) return;
-
-    cJSON* obj = cJSON_Parse(payload);
-    if (!obj) return;
-
-    cJSON* choices = cJSON_GetObjectItem(obj, "choices");
-    if (cJSON_IsArray(choices) && cJSON_GetArraySize(choices) > 0) {
-        cJSON* c0 = cJSON_GetArrayItem(choices, 0);
-        cJSON* delta = c0 ? cJSON_GetObjectItem(c0, "delta") : nullptr;
-        cJSON* cont = delta ? cJSON_GetObjectItem(delta, "content") : nullptr;
-        if (cont && cJSON_IsString(cont) && cont->valuestring[0] != '\0') {
-            int64_t now = esp_timer_get_time();
-            if (ctx->first_token_us == 0) {
-                ctx->first_token_us = now;
-            }
-            size_t dlen = strlen(cont->valuestring);
-            if (ctx->reply_len + dlen >= ctx->reply_cap) {
-                dlen = (ctx->reply_cap - 1) - ctx->reply_len;
-            }
-            if (dlen > 0) {
-                memcpy(ctx->reply_utf8 + ctx->reply_len, cont->valuestring, dlen);
-                ctx->reply_len += dlen;
-                ctx->reply_utf8[ctx->reply_len] = '\0';
-            }
-
-            // Hide leading [ACTION: ...] tag during live SSE preview; execute actions SAFELY AFTER HTTP closes!
-            // (Eliminates nested 2nd TLS/TCP session & heap/I2C contention inside Groq's SSE callback!)
-            if (!ctx->action_checked) {
-                const char* p = ctx->reply_utf8;
-                while (*p == ' ' || *p == '\n' || *p == '\r') p++;
-                if (*p == '[') {
-                    const char* close_br = strchr(p, ']');
-                    if (close_br) {
-                        if (strncmp(p, "[ACTION:", 8) == 0 && (close_br - p) < 256) {
-                            const char* after = close_br + 1;
-                            while (*after == ' ' || *after == '\n' || *after == '\r') after++;
-                            ctx->spoken_offset = (size_t)(after - ctx->reply_utf8);
-                        } else {
-                            ctx->spoken_offset = (size_t)(p - ctx->reply_utf8);
-                        }
-                        ctx->action_checked = true;
-                    } else if ((size_t)(ctx->reply_utf8 + ctx->reply_len - p) > 250) {
-                        ctx->spoken_offset = (size_t)(p - ctx->reply_utf8);
-                        ctx->action_checked = true;
-                    }
-                } else if (*p != '\0') {
-                    ctx->spoken_offset = (size_t)(p - ctx->reply_utf8);
-                    ctx->action_checked = true;
-                }
-            }
-
-            // Stream live words onto watch display every ~120ms (strip any trailing [ACTION: ...] tag cleanly)
-            if (ctx->action_checked && ctx->ui_ascii_tmp) {
-                const char* spoken = ctx->reply_utf8 + ctx->spoken_offset;
-                while (*spoken == ' ' || *spoken == '\n' || *spoken == '\r') spoken++;
-                const char* tail_tag = strstr(spoken, "[ACTION:");
-                size_t slen = tail_tag ? (size_t)(tail_tag - spoken) : strlen(spoken);
-                while (slen > 0 && (spoken[slen - 1] == ' ' || spoken[slen - 1] == '\n' || spoken[slen - 1] == '\r')) slen--;
-                if (slen > 0 && ((now - ctx->last_ui_push_us) > 120000LL || (slen > ctx->last_ui_len && (slen - ctx->last_ui_len) >= 28))) {
-                    ctx->last_ui_push_us = now;
-                    ctx->last_ui_len = slen;
-                    char preview_utf8[320];
-                    size_t plen = (slen < sizeof(preview_utf8) - 1) ? slen : (sizeof(preview_utf8) - 1);
-                    memcpy(preview_utf8, spoken, plen);
-                    preview_utf8[plen] = '\0';
-                    tars_utf8_to_ascii(ctx->ui_ascii_tmp, preview_utf8, TARS_TEXT_CAP);
-                    display_manager_reset_timer();
-                    if (ctx->is_wake_window) {
-                        update_wake_pill_ui("TARS // CANLI YANIT", ctx->ui_ascii_tmp, 0x00E676, true);
-                    } else if (s_tars_instance) {
-                        s_tars_instance->update_ui_state("TARS YANITLIYOR (CANLI)...", 0x00E676, 0, nullptr, ctx->ui_ascii_tmp, nullptr);
-                    }
-                }
-            }
-        }
-    }
-    cJSON_Delete(obj);
-}
-
 static esp_err_t groq_http_event_handler(esp_http_client_event_t *evt) {
     GroqHttpCtx* ctx = (GroqHttpCtx*)evt->user_data;
-    if (!ctx || evt->event_id != HTTP_EVENT_ON_DATA || evt->data_len <= 0) {
+    if (!ctx || evt->event_id != HTTP_EVENT_ON_DATA || evt->data_len <= 0 || !ctx->json_buf) {
         return ESP_OK;
     }
-
-    if (ctx->mode == GROQ_MODE_JSON && ctx->json_buf) {
-        size_t copy_len = (size_t)evt->data_len;
-        if (ctx->json_len + copy_len >= ctx->json_cap) {
-            copy_len = (ctx->json_cap - 1) - ctx->json_len;
-        }
-        if (copy_len > 0) {
-            memcpy(ctx->json_buf + ctx->json_len, evt->data, copy_len);
-            ctx->json_len += copy_len;
-            ctx->json_buf[ctx->json_len] = '\0';
-        }
-    } else if (ctx->mode == GROQ_MODE_SSE_STREAM && ctx->sse_line_buf) {
-        const char* src = (const char*)evt->data;
-        for (int i = 0; i < evt->data_len; i++) {
-            char ch = src[i];
-            if (ch == '\n') {
-                if (ctx->sse_line_len > 0 && ctx->sse_line_buf[ctx->sse_line_len - 1] == '\r') {
-                    ctx->sse_line_len--;
-                }
-                ctx->sse_line_buf[ctx->sse_line_len] = '\0';
-                if (ctx->sse_line_len > 0) {
-                    tars_process_sse_line(ctx, ctx->sse_line_buf);
-                }
-                ctx->sse_line_len = 0;
-            } else if (ctx->sse_line_len + 1 < ctx->sse_line_cap) {
-                ctx->sse_line_buf[ctx->sse_line_len++] = ch;
-            }
-        }
+    size_t copy_len = (size_t)evt->data_len;
+    if (ctx->json_len + copy_len >= ctx->json_cap) {
+        copy_len = (ctx->json_cap - 1) - ctx->json_len;
+    }
+    if (copy_len > 0) {
+        memcpy(ctx->json_buf + ctx->json_len, evt->data, copy_len);
+        ctx->json_len += copy_len;
+        ctx->json_buf[ctx->json_len] = '\0';
     }
     return ESP_OK;
 }
@@ -1018,64 +1339,27 @@ static void tars_reset_groq_client(void) {
 }
 
 static esp_http_client_handle_t tars_get_groq_client(void) {
-    // Recreate if idle > 45s so Cloudflare/Groq keep-alive never stalls on a stale half-closed socket
     int64_t now = esp_timer_get_time();
     if (s_groq_client && s_groq_warm && (now - s_groq_last_use_us) > 45000000LL) {
         tars_reset_groq_client();
     }
     if (!s_groq_client) {
         esp_http_client_config_t config = {};
-        config.url = "https://api.groq.com/openai/v1/models";
+        config.url = "https://api.groq.com/openai/v1/chat/completions";
         config.event_handler = groq_http_event_handler;
         config.user_data = &s_http_ctx;
         config.crt_bundle_attach = esp_crt_bundle_attach;
-        config.timeout_ms = 12000;
+        config.timeout_ms = 14000;
         config.keep_alive_enable = true;
         config.keep_alive_idle = 40;
         config.keep_alive_interval = 10;
         config.keep_alive_count = 3;
         config.buffer_size = 2048;
-        config.buffer_size_tx = 4096; // Larger TX buffer = much faster TLS audio upload on ESP32-S3!
+        config.buffer_size_tx = 4096;
         s_groq_client = esp_http_client_init(&config);
         s_groq_warm = false;
     }
     return s_groq_client;
-}
-
-// Background TLS Pre-Warm: performs TLS 1.3 handshake BEFORE user finishes speaking -> 0ms TLS on voice command!
-static void tars_prewarm_groq_tls(void) {
-    if (s_groq_warm || !wifi_manager_is_connected() || wifi_manager_is_ap_active()) return;
-    tars_load_api_key();
-    if (strlen(s_groq_api_key) < 15) return;
-
-    esp_http_client_handle_t client = tars_get_groq_client();
-    if (!client) return;
-
-    int64_t t0 = esp_timer_get_time();
-    char auth_hdr[200];
-    snprintf(auth_hdr, sizeof(auth_hdr), "Bearer %s", s_groq_api_key);
-
-    s_http_ctx.mode = GROQ_MODE_DISCARD;
-    esp_http_client_set_url(client, "https://api.groq.com/openai/v1/models");
-    esp_http_client_set_method(client, HTTP_METHOD_GET);
-    esp_http_client_set_header(client, "Authorization", auth_hdr);
-    esp_http_client_delete_header(client, "Content-Type");
-    esp_http_client_set_post_field(client, nullptr, 0);
-
-    wifi_manager_set_turbo(true);
-    esp_err_t err = esp_http_client_perform(client);
-    wifi_manager_set_turbo(false);
-
-    if (err == ESP_OK && esp_http_client_get_status_code(client) == 200) {
-        s_groq_warm = true;
-        s_groq_last_use_us = esp_timer_get_time();
-        ESP_LOGI(TAG, "Groq TLS 1.3 Pre-Warmed in %lld ms! Next voice turn TLS = 0ms.",
-                 (long long)((s_groq_last_use_us - t0) / 1000));
-    } else {
-        ESP_LOGW(TAG, "Groq TLS pre-warm note: err=%s status=%d", esp_err_to_name(err),
-                 esp_http_client_get_status_code(client));
-        tars_reset_groq_client();
-    }
 }
 
 enum TarsPipelineResult {
@@ -1087,21 +1371,81 @@ enum TarsPipelineResult {
 
 struct TarsTimingStats {
     int stt_ms;
-    int first_tok_ms;
-    int action_ms;
+    int llm_ms;
     int total_ms;
     bool was_warm_tls;
-    bool action_fired_live;
-    char live_action_badge[64];
 };
 
-// 3x Turbo Groq LPU Pipeline: Persistent Warm TLS + 2x Smaller u-Law WAV + Wi-Fi Turbo Burst + Live SSE Token Streaming!
+// Build Groq Strict JSON Schema payload: guarantees {"reply": string, "actions": string[]} with 0% tag hallucination!
+static char* tars_build_groq_json_body(const char* sys_prompt, const char* raw_transcript) {
+    cJSON* root = cJSON_CreateObject();
+    if (!root) return nullptr;
+
+    cJSON_AddStringToObject(root, "model", "openai/gpt-oss-20b");
+    cJSON_AddStringToObject(root, "reasoning_effort", "low");
+    cJSON_AddBoolToObject(root, "include_reasoning", false);
+    cJSON_AddNumberToObject(root, "max_tokens", 512);
+    cJSON_AddNumberToObject(root, "temperature", 0.15);
+
+    // Strict Structured Output schema: {"reply": string, "actions": string[]}
+    cJSON* rf = cJSON_AddObjectToObject(root, "response_format");
+    cJSON_AddStringToObject(rf, "type", "json_schema");
+    cJSON* js = cJSON_AddObjectToObject(rf, "json_schema");
+    cJSON_AddStringToObject(js, "name", "tars_response");
+    cJSON_AddBoolToObject(js, "strict", true);
+    cJSON* sch = cJSON_AddObjectToObject(js, "schema");
+    cJSON_AddStringToObject(sch, "type", "object");
+    cJSON* props = cJSON_AddObjectToObject(sch, "properties");
+    cJSON* p_rep = cJSON_AddObjectToObject(props, "reply");
+    cJSON_AddStringToObject(p_rep, "type", "string");
+    cJSON* p_act = cJSON_AddObjectToObject(props, "actions");
+    cJSON_AddStringToObject(p_act, "type", "array");
+    cJSON* items = cJSON_AddObjectToObject(p_act, "items");
+    cJSON_AddStringToObject(items, "type", "string");
+    cJSON* req_arr = cJSON_AddArrayToObject(sch, "required");
+    cJSON_AddItemToArray(req_arr, cJSON_CreateString("reply"));
+    cJSON_AddItemToArray(req_arr, cJSON_CreateString("actions"));
+    cJSON_AddBoolToObject(sch, "additionalProperties", false);
+
+    cJSON* msgs = cJSON_AddArrayToObject(root, "messages");
+    cJSON* m_sys = cJSON_CreateObject();
+    cJSON_AddStringToObject(m_sys, "role", "system");
+    cJSON_AddStringToObject(m_sys, "content", sys_prompt);
+    cJSON_AddItemToArray(msgs, m_sys);
+
+    for (int h = 0; h < s_hist_count; h++) {
+        if (s_hist_user[h] && s_hist_asst[h] && strlen(s_hist_user[h]) > 0) {
+            cJSON* hu = cJSON_CreateObject();
+            cJSON_AddStringToObject(hu, "role", "user");
+            cJSON_AddStringToObject(hu, "content", s_hist_user[h]);
+            cJSON_AddItemToArray(msgs, hu);
+
+            cJSON* ha = cJSON_CreateObject();
+            cJSON_AddStringToObject(ha, "role", "assistant");
+            cJSON_AddStringToObject(ha, "content", s_hist_asst[h]);
+            cJSON_AddItemToArray(msgs, ha);
+        }
+    }
+
+    cJSON* m_usr = cJSON_CreateObject();
+    cJSON_AddStringToObject(m_usr, "role", "user");
+    cJSON_AddStringToObject(m_usr, "content", raw_transcript);
+    cJSON_AddItemToArray(msgs, m_usr);
+
+    char* body = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return body;
+}
+
+// TARS v4.0 Clean Pipeline: u-Law Whisper v3 STT (2-retry) -> Groq Strict JSON Schema (2-retry) -> Deterministic Actions!
 static TarsPipelineResult tars_run_groq_turbo_pipeline(const uint8_t* wav_data, size_t wav_len,
                                                        bool is_wake_window,
                                                        char* out_transcript_ascii, size_t max_trans,
                                                        char* out_reply_utf8, size_t max_reply,
+                                                       char* out_actions_joined, size_t max_actions,
                                                        TarsTimingStats* out_stats) {
     memset(out_stats, 0, sizeof(*out_stats));
+    out_actions_joined[0] = '\0';
     s_live_pc_telemetry[0] = '\0';
     tars_load_api_key();
     if (strlen(s_groq_api_key) < 15) return TARS_RES_CLOUD_ERR;
@@ -1109,8 +1453,11 @@ static TarsPipelineResult tars_run_groq_turbo_pipeline(const uint8_t* wav_data, 
 
     if (!wifi_manager_is_connected()) {
         if (is_wake_window) {
+            s_wake_vis_state = TARS_VIS_THINK;
+            s_wake_countdown_active = false;
             update_wake_pill_ui("TARS // WI-FI", "Ev Wi-Fi baglaniyor...", 0xFFA000, true);
         } else if (s_tars_instance) {
+            s_tars_instance->set_visual_state(TARS_VIS_THINK, 0);
             s_tars_instance->update_ui_state("WI-FI BAGLANIYOR...", 0xFFA000, 0, nullptr, nullptr, nullptr);
         }
         if (!wifi_manager_is_active()) {
@@ -1129,20 +1476,16 @@ static TarsPipelineResult tars_run_groq_turbo_pipeline(const uint8_t* wav_data, 
     display_manager_reset_timer();
 
     if (is_wake_window) {
-        update_wake_pill_ui("TARS // TURBO STT", "Turkce konusma cozuluyor...", 0x00E5FF, true);
+        s_wake_vis_state = TARS_VIS_THINK;
+        s_wake_countdown_active = false;
+        update_wake_pill_ui("TARS // STT", "Turkce konusma cozuluyor...", 0x00E5FF, true);
     } else if (s_tars_instance) {
-        s_tars_instance->update_ui_state("TURBO STT (u-Law + Whisper v3)...", 0x00E5FF, 0, nullptr, nullptr, nullptr);
+        s_tars_instance->set_visual_state(TARS_VIS_THINK, 0);
+        s_tars_instance->update_ui_state("SES COZULUYOR...", 0x00E5FF, 0, nullptr, nullptr, nullptr);
     }
 
-    char* resp_mem = (char*)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    char* sse_line = (char*)heap_caps_malloc(2048, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    char* ui_ascii = (char*)heap_caps_malloc(TARS_TEXT_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!resp_mem || !sse_line || !ui_ascii) {
-        if (resp_mem) free(resp_mem);
-        if (sse_line) free(sse_line);
-        if (ui_ascii) free(ui_ascii);
-        return TARS_RES_CLOUD_ERR;
-    }
+    char* resp_mem = (char*)heap_caps_malloc(12288, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!resp_mem) return TARS_RES_CLOUD_ERR;
 
     char auth_hdr[200];
     snprintf(auth_hdr, sizeof(auth_hdr), "Bearer %s", s_groq_api_key);
@@ -1177,8 +1520,6 @@ static TarsPipelineResult tars_run_groq_turbo_pipeline(const uint8_t* wav_data, 
     uint8_t* body_buf = (uint8_t*)heap_caps_malloc(body_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!body_buf) {
         free(resp_mem);
-        free(sse_line);
-        free(ui_ascii);
         return TARS_RES_CLOUD_ERR;
     }
     memcpy(body_buf, part_head, head_len);
@@ -1188,7 +1529,6 @@ static TarsPipelineResult tars_run_groq_turbo_pipeline(const uint8_t* wav_data, 
     char ctype_hdr[96];
     snprintf(ctype_hdr, sizeof(ctype_hdr), "multipart/form-data; boundary=%s", boundary);
 
-    // Activate Wi-Fi Turbo Burst (WIFI_PS_NONE) strictly for the ~1s Groq upload + SSE stream!
     wifi_manager_mark_activity();
     wifi_manager_set_turbo(true);
 
@@ -1196,15 +1536,14 @@ static TarsPipelineResult tars_run_groq_turbo_pipeline(const uint8_t* wav_data, 
     esp_err_t err = ESP_FAIL;
     int status_code = 0;
 
-    // Step 1: Whisper-Large-v3 STT on Persistent Warm TLS Client (with automatic 1-retry if keep-alive socket went stale)
+    // Step 1: Whisper-Large-v3 STT (2 attempts with automatic stale-socket reset)
     for (int attempt = 0; attempt < 2; attempt++) {
         esp_http_client_handle_t client = tars_get_groq_client();
         if (!client) break;
 
-        s_http_ctx.mode = GROQ_MODE_JSON;
         s_http_ctx.json_buf = resp_mem;
         s_http_ctx.json_len = 0;
-        s_http_ctx.json_cap = 8192;
+        s_http_ctx.json_cap = 12288;
         resp_mem[0] = '\0';
 
         esp_http_client_set_url(client, "https://api.groq.com/openai/v1/audio/transcriptions");
@@ -1220,10 +1559,11 @@ static TarsPipelineResult tars_run_groq_turbo_pipeline(const uint8_t* wav_data, 
             s_groq_last_use_us = esp_timer_get_time();
             break;
         }
-        ESP_LOGW(TAG, "Groq STT attempt %d failed (err=%s, http=%d) -> resetting TLS socket",
-                 attempt + 1, esp_err_to_name(err), status_code);
+        ESP_LOGW(TAG, "Groq STT attempt %d failed (err=%s, http=%d, body='%.100s') -> resetting TLS",
+                 attempt + 1, esp_err_to_name(err), status_code, resp_mem);
         tars_reset_groq_client();
         out_stats->was_warm_tls = false;
+        vTaskDelay(pdMS_TO_TICKS(80));
     }
 
     free(body_buf);
@@ -1234,8 +1574,6 @@ static TarsPipelineResult tars_run_groq_turbo_pipeline(const uint8_t* wav_data, 
     if (err != ESP_OK || status_code != 200) {
         wifi_manager_set_turbo(false);
         free(resp_mem);
-        free(sse_line);
-        free(ui_ascii);
         return TARS_RES_CLOUD_ERR;
     }
 
@@ -1243,8 +1581,6 @@ static TarsPipelineResult tars_run_groq_turbo_pipeline(const uint8_t* wav_data, 
     if (!stt_json) {
         wifi_manager_set_turbo(false);
         free(resp_mem);
-        free(sse_line);
-        free(ui_ascii);
         return TARS_RES_CLOUD_ERR;
     }
     cJSON* text_item = cJSON_GetObjectItem(stt_json, "text");
@@ -1252,8 +1588,6 @@ static TarsPipelineResult tars_run_groq_turbo_pipeline(const uint8_t* wav_data, 
         cJSON_Delete(stt_json);
         wifi_manager_set_turbo(false);
         free(resp_mem);
-        free(sse_line);
-        free(ui_ascii);
         return TARS_RES_SILENCE_HALLUCINATION;
     }
 
@@ -1262,8 +1596,6 @@ static TarsPipelineResult tars_run_groq_turbo_pipeline(const uint8_t* wav_data, 
         cJSON_Delete(stt_json);
         wifi_manager_set_turbo(false);
         free(resp_mem);
-        free(sse_line);
-        free(ui_ascii);
         return TARS_RES_CLOUD_ERR;
     }
     const char* t_src = text_item->valuestring;
@@ -1273,25 +1605,26 @@ static TarsPipelineResult tars_run_groq_turbo_pipeline(const uint8_t* wav_data, 
     tars_utf8_to_ascii(out_transcript_ascii, raw_transcript, max_trans);
     cJSON_Delete(stt_json);
 
-    ESP_LOGI(TAG, "STT (%dms, %uKB u-law, warm=%d): '%s'",
-             out_stats->stt_ms, (unsigned)(wav_len / 1024), (int)out_stats->was_warm_tls, out_transcript_ascii);
+    ESP_LOGI(TAG, "STT (%dms, %uKB u-law): '%s'",
+             out_stats->stt_ms, (unsigned)(wav_len / 1024), out_transcript_ascii);
     if (tars_is_whisper_hallucination(out_transcript_ascii)) {
         ESP_LOGW(TAG, "Filtered Whisper silence hallucination: '%s'", out_transcript_ascii);
         free(raw_transcript);
         wifi_manager_set_turbo(false);
         free(resp_mem);
-        free(sse_line);
-        free(ui_ascii);
         return TARS_RES_SILENCE_HALLUCINATION;
     }
 
     if (is_wake_window) {
+        s_wake_vis_state = TARS_VIS_THINK;
+        s_wake_countdown_active = false;
         update_wake_pill_ui("TARS // DUSUNUYOR", out_transcript_ascii, 0xFFA000, true);
     } else if (s_tars_instance) {
-        s_tars_instance->update_ui_state("TARS AKIS BASLIYOR...", 0xFFA000, 0, out_transcript_ascii, nullptr, nullptr);
+        s_tars_instance->set_visual_state(TARS_VIS_THINK, 0);
+        s_tars_instance->update_ui_state("TARS DUSUNUYOR...", 0xFFA000, 0, out_transcript_ascii, nullptr, nullptr);
     }
 
-    // Step 2: Live SSE Token Streaming on the SAME Warm Keep-Alive TLS Client!
+    // Step 2: Groq Structured JSON Brain (Strict json_schema + 2-attempt TLS retry!)
     int humor = s_tars_instance ? s_tars_instance->get_humor() : 75;
     int bat = bsp_battery_get_percent();
     struct tm ti = {};
@@ -1302,138 +1635,119 @@ static TarsPipelineResult tars_run_groq_turbo_pipeline(const uint8_t* wav_data, 
         free(raw_transcript);
         wifi_manager_set_turbo(false);
         free(resp_mem);
-        free(sse_line);
-        free(ui_ascii);
         return TARS_RES_CLOUD_ERR;
     }
     snprintf(sys_prompt, 3584,
-             "Sen Interstellar filmindeki TARS'sin. Sahibin Eymen'in akilli saatindeki zeki, sadik sesli asistansin. "
-             "Mizah seviyen %%%d, durustluk %%90. Kisa, dogal 1-2 Turkce cumleyle cevap ver. "
-             "Bilgi: Saat=%02d:%02d, Pil=%%%d.\n"
-             "COK ONEMLI KURAL:\n"
-             "1) Normal sohbet, selamlasma, soru, fikra, saat/pil sorma durumlarinda ASLA [ACTION: ...] yazma ve ASLA kendiliginden isik/TV/PC acip kapatma! (Aksam saati olsa bile kullanici acikca istemedikce isigi yakma!)\n"
-             "   Ornek: Kullanici='Merhaba.' -> 'Merhaba Eymen, seni dinliyorum.'\n"
-             "   Ornek: Kullanici='Bana bir fikra anlat.' -> 'Kisa bir fikra...' (ETIKETSIZ!)\n"
-             "   Ornek: Kullanici='Saat kac?' -> 'Saat su an %02d:%02d, Eymen.' (ETIKETSIZ!)\n"
-             "2) SADECE kullanici acikca bir cihazi/uygulamayi kontrol etmek istiyorsa cevabin EN BASINA [ACTION: KOMUT] yaz (birden fazla istek varsa ';' ile ayir) ve yanina kisa Turkce cevabini yaz:\n"
-             "- Ev Isigi (SADECE isik/lamba/salon derse): SALON_ON, SALON_OFF, SALON_TOGGLE\n"
-             "- TV (SADECE televizyon/TV/Tivibu/kanal derse): TV_POWER, TV_WAKE, TV_SLEEP, TV_PLAY_PAUSE, TV_PAUSE, TV_PLAY, TV_VOL_UP, TV_VOL_DOWN, TV_MUTE, TV_CH_UP, TV_CH_DOWN, TV_FWD, TV_REW, TV_NEXT, TV_PREV, TV_UP, TV_DOWN, TV_LEFT, TV_RIGHT, TV_OK, TV_BACK, TV_HOME, TV_OPEN_YOUTUBE, TV_OPEN_NETFLIX, TV_OPEN_SPOTIFY, TV_OPEN_PRIME, TV_OPEN_DISNEY, TV_YOUTUBE_PLAY:sorgu\n"
-             "- PC Guc (SADECE bilgisayar/PC derse): PC_WAKE, PC_SLEEP, PC_LOCK, PC_SCREEN_OFF, PC_SHUTDOWN_SEC:30, PC_SHUTDOWN_MIN:10, PC_SHUTDOWN_CANCEL\n"
-             "- PC Medya/Ses: PC_MEDIA_PLAY_PAUSE, PC_MEDIA_NEXT, PC_MEDIA_PREV, PC_VOL_UP, PC_VOL_DOWN, PC_VOL_MUTE, PC_VOL_SET:40\n"
-             "- PC Web/Arama/Dikte: PC_GOOGLE_SEARCH:sorgu, PC_OPEN_URL:url, PC_YOUTUBE_PLAY:sorgu, PC_YOUTUBE_SEARCH:sorgu, PC_SPOTIFY_SEARCH:sorgu, PC_TYPE_TEXT:metin, PC_OPEN_CLIPBOARD_URL\n"
-             "- PC Uygulama: PC_OPEN_APP:ad (KiCad, Creality Print, Valorant, LoL, Minecraft, OpenRocket, Betaflight, OBS, CapCut, Telegram, Antigravity, Spotify, Chrome, Discord, Steam, VS Code, Arduino, Ayarlar), PC_CLOSE_APP:ad\n"
-             "- PC Video/Pencere: PC_SEEK_FWD, PC_SEEK_BACK, PC_CAPTIONS, PC_THEATER, PC_FULLSCREEN, PC_SPEED_UP, PC_SPEED_DOWN, PC_NEW_TAB, PC_REOPEN_TAB, PC_NEXT_TAB, PC_PREV_TAB, PC_CLOSE_TAB, PC_REFRESH, PC_SCROLL_DOWN, PC_SCROLL_UP, PC_ALT_TAB, PC_CLOSE_WINDOW, PC_SNAP_LEFT, PC_SNAP_RIGHT, PC_MINIMIZE_ALL, PC_BOSS_KEY\n"
-             "- PC Sistem: PC_SCREENSHOT, PC_GET_STATS\n"
-             "- Ayar: HUMOR_SET:50",
-             humor, ti.tm_hour, ti.tm_min, bat, ti.tm_hour, ti.tm_min);
+             "Sen Interstellar filmindeki TARS'sin. Sahibin Eymen'in akilli saatindeki zeki, sadik, esprili sesli asistansin. "
+             "Mizah=%%%d, Durustluk=%%90. Bilgi: Saat=%02d:%02d, SaatPili=%%%d.\n"
+             "HER ZAMAN sadece su JSON formatinda cevap ver: {\"reply\": \"kisa 1-2 cumle Turkce cevap\", \"actions\": [\"KOMUT\"]}\n"
+             "KURALLAR:\n"
+             "1) Normal sohbet, selam, soru, fikra, saat/pil sorma, dertlesme -> actions KESINLIKLE bos liste [] olmali! Asla kendiliginden isik/PC/TV acip kapatma.\n"
+             "2) SADECE kullanici acikca bir cihazi/uygulamayi/modu kontrol etmek isterse actions listesine asagidaki gecerli komut kodlarini koy:\n"
+             "- Isik: SALON_ON, SALON_OFF, SALON_TOGGLE\n"
+             "- TV: TV_POWER, TV_WAKE, TV_SLEEP, TV_PLAY_PAUSE, TV_PAUSE, TV_PLAY, TV_VOL_UP, TV_VOL_DOWN, TV_MUTE, TV_CH_UP, TV_CH_DOWN, TV_FWD, TV_REW, TV_NEXT, TV_PREV, TV_HOME, TV_BACK, TV_OK, TV_OPEN_YOUTUBE, TV_OPEN_NETFLIX, TV_OPEN_SPOTIFY, TV_OPEN_PRIME, TV_OPEN_DISNEY, TV_YOUTUBE_PLAY:<sorgu>\n"
+             "- PC Guc: PC_WAKE, PC_SLEEP, PC_LOCK, PC_SCREEN_OFF, PC_SHUTDOWN_SEC:<sn>, PC_SHUTDOWN_MIN:<dk>, PC_SHUTDOWN_CANCEL\n"
+             "- PC Durum (CPU/RAM/disk/bilgisayar durumu sorulunca MUTLAKA kullan!): PC_GET_STATS\n"
+             "- PC Medya/Ses: PC_MEDIA_PLAY_PAUSE, PC_MEDIA_NEXT, PC_MEDIA_PREV, PC_VOL_UP, PC_VOL_DOWN, PC_VOL_MUTE, PC_VOL_SET:<0-100>\n"
+             "- PC Web/Arama/Yaz: PC_GOOGLE_SEARCH:<sorgu>, PC_OPEN_URL:<url>, PC_YOUTUBE_PLAY:<sorgu>, PC_YOUTUBE_SEARCH:<sorgu>, PC_SPOTIFY_SEARCH:<sorgu>, PC_TYPE_TEXT:<metin>, PC_OPEN_CLIPBOARD_URL\n"
+             "- PC Uygulama: PC_OPEN_APP:<ad> (KiCad, Creality Print, Valorant, LoL, Minecraft, OpenRocket, Betaflight, OBS, CapCut, Telegram, Antigravity, Spotify, Chrome, Discord, Steam, VS Code, Arduino, Ayarlar), PC_CLOSE_APP:<ad>\n"
+             "- PC Video/Pencere: PC_SEEK_FWD, PC_SEEK_BACK, PC_CAPTIONS, PC_THEATER, PC_FULLSCREEN, PC_SPEED_UP, PC_SPEED_DOWN, PC_NEW_TAB, PC_REOPEN_TAB, PC_NEXT_TAB, PC_PREV_TAB, PC_CLOSE_TAB, PC_REFRESH, PC_SCROLL_DOWN, PC_SCROLL_UP, PC_ALT_TAB, PC_CLOSE_WINDOW, PC_SNAP_LEFT, PC_SNAP_RIGHT, PC_MINIMIZE_ALL, PC_BOSS_KEY, PC_SCREENSHOT\n"
+             "- Mod/Tema: PC_MODE_GAME (oyun modu), PC_MODE_STUDY (ders modu), PC_MODE_MOVIE (sinema modu), PC_MODE_BREAK (mola modu), TARS_TURBO_ON (kirmizi turbo tema), TARS_TURBO_OFF (normal tema), HUMOR_SET:<0-100>",
+             humor, ti.tm_hour, ti.tm_min, bat);
 
-    cJSON* root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "model", "openai/gpt-oss-20b");
-    cJSON_AddStringToObject(root, "reasoning_effort", "low");
-    cJSON_AddBoolToObject(root, "include_reasoning", false);
-    cJSON_AddBoolToObject(root, "stream", true); // LIVE SSE TOKEN STREAMING!
-    cJSON_AddNumberToObject(root, "max_tokens", 450);
-    cJSON_AddNumberToObject(root, "temperature", 0.2);
-    cJSON* msgs = cJSON_AddArrayToObject(root, "messages");
-
-    cJSON* m_sys = cJSON_CreateObject();
-    cJSON_AddStringToObject(m_sys, "role", "system");
-    cJSON_AddStringToObject(m_sys, "content", sys_prompt);
-    cJSON_AddItemToArray(msgs, m_sys);
+    char* chat_body = tars_build_groq_json_body(sys_prompt, raw_transcript);
     free(sys_prompt);
-
-    for (int h = 0; h < s_hist_count; h++) {
-        if (s_hist_user[h] && s_hist_asst[h] && strlen(s_hist_user[h]) > 0) {
-            cJSON* hu = cJSON_CreateObject();
-            cJSON_AddStringToObject(hu, "role", "user");
-            cJSON_AddStringToObject(hu, "content", s_hist_user[h]);
-            cJSON_AddItemToArray(msgs, hu);
-
-            cJSON* ha = cJSON_CreateObject();
-            cJSON_AddStringToObject(ha, "role", "assistant");
-            cJSON_AddStringToObject(ha, "content", s_hist_asst[h]);
-            cJSON_AddItemToArray(msgs, ha);
-        }
-    }
-
-    cJSON* m_usr = cJSON_CreateObject();
-    cJSON_AddStringToObject(m_usr, "role", "user");
-    cJSON_AddStringToObject(m_usr, "content", raw_transcript);
-    cJSON_AddItemToArray(msgs, m_usr);
-
-    char* chat_body = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
 
     int64_t t_chat_start = esp_timer_get_time();
     out_reply_utf8[0] = '\0';
-
-    s_http_ctx.mode = GROQ_MODE_SSE_STREAM;
-    s_http_ctx.sse_line_buf = sse_line;
-    s_http_ctx.sse_line_len = 0;
-    s_http_ctx.sse_line_cap = 2048;
-    s_http_ctx.reply_utf8 = out_reply_utf8;
-    s_http_ctx.reply_len = 0;
-    s_http_ctx.reply_cap = max_reply;
-    s_http_ctx.ui_ascii_tmp = ui_ascii;
-    s_http_ctx.is_wake_window = is_wake_window;
-    s_http_ctx.action_checked = false;
-    s_http_ctx.action_fired = false;
-    s_http_ctx.spoken_offset = 0;
-    strncpy(s_http_ctx.action_badge, "EYLEM: YOK (SOHBET)", sizeof(s_http_ctx.action_badge) - 1);
-    s_http_ctx.chat_start_us = t_chat_start;
-    s_http_ctx.first_token_us = 0;
-    s_http_ctx.action_us = 0;
-    s_http_ctx.last_ui_push_us = 0;
-    s_http_ctx.last_ui_len = 0;
-
-    esp_http_client_handle_t client = tars_get_groq_client();
     TarsPipelineResult res = TARS_RES_CLOUD_ERR;
-    if (client && chat_body) {
-        esp_http_client_set_url(client, "https://api.groq.com/openai/v1/chat/completions");
-        esp_http_client_set_method(client, HTTP_METHOD_POST);
-        esp_http_client_set_header(client, "Authorization", auth_hdr);
-        esp_http_client_set_header(client, "Content-Type", "application/json");
-        esp_http_client_set_post_field(client, chat_body, strlen(chat_body));
 
-        err = esp_http_client_perform(client);
-        status_code = esp_http_client_get_status_code(client);
+    if (chat_body) {
+        size_t chat_body_len = strlen(chat_body);
+        for (int attempt = 0; attempt < 2; attempt++) {
+            esp_http_client_handle_t client = tars_get_groq_client();
+            if (!client) break;
 
-        if (err == ESP_OK && status_code == 200 && s_http_ctx.reply_len > 0) {
-            s_groq_warm = true;
-            s_groq_last_use_us = esp_timer_get_time();
-            // Strip [ACTION: ...] tags BEFORE saving into history so past commands NEVER echo/poison future turns!
-            char* hist_clean = (char*)heap_caps_calloc(1, TARS_TEXT_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (hist_clean) {
-                tars_extract_and_strip_actions(out_reply_utf8, nullptr, 0, hist_clean, TARS_TEXT_CAP);
-                tars_push_history(raw_transcript, hist_clean[0] ? hist_clean : "Komut uygulandi.");
-                free(hist_clean);
+            s_http_ctx.json_buf = resp_mem;
+            s_http_ctx.json_len = 0;
+            s_http_ctx.json_cap = 12288;
+            resp_mem[0] = '\0';
+
+            esp_http_client_set_url(client, "https://api.groq.com/openai/v1/chat/completions");
+            esp_http_client_set_method(client, HTTP_METHOD_POST);
+            esp_http_client_set_header(client, "Authorization", auth_hdr);
+            esp_http_client_set_header(client, "Content-Type", "application/json");
+            esp_http_client_set_post_field(client, chat_body, chat_body_len);
+
+            err = esp_http_client_perform(client);
+            status_code = esp_http_client_get_status_code(client);
+
+            if (err == ESP_OK && status_code == 200 && s_http_ctx.json_len > 10) {
+                cJSON* resp_json = cJSON_Parse(resp_mem);
+                cJSON* choices = resp_json ? cJSON_GetObjectItem(resp_json, "choices") : nullptr;
+                cJSON* c0 = (cJSON_IsArray(choices) && cJSON_GetArraySize(choices) > 0) ? cJSON_GetArrayItem(choices, 0) : nullptr;
+                cJSON* msg = c0 ? cJSON_GetObjectItem(c0, "message") : nullptr;
+                cJSON* content = msg ? cJSON_GetObjectItem(msg, "content") : nullptr;
+
+                if (content && cJSON_IsString(content) && content->valuestring[0] != '\0') {
+                    s_groq_warm = true;
+                    s_groq_last_use_us = esp_timer_get_time();
+
+                    cJSON* structured = cJSON_Parse(content->valuestring);
+                    if (structured) {
+                        cJSON* j_rep = cJSON_GetObjectItem(structured, "reply");
+                        if (j_rep && cJSON_IsString(j_rep)) {
+                            strncpy(out_reply_utf8, j_rep->valuestring, max_reply - 1);
+                            out_reply_utf8[max_reply - 1] = '\0';
+                        }
+                        cJSON* j_acts = cJSON_GetObjectItem(structured, "actions");
+                        if (cJSON_IsArray(j_acts)) {
+                            int n_acts = cJSON_GetArraySize(j_acts);
+                            for (int a = 0; a < n_acts && a < 5; a++) {
+                                cJSON* it = cJSON_GetArrayItem(j_acts, a);
+                                if (it && cJSON_IsString(it) && strlen(it->valuestring) > 1) {
+                                    if (out_actions_joined[0] != '\0' && strlen(out_actions_joined) + 3 < max_actions) {
+                                        strncat(out_actions_joined, "; ", max_actions - strlen(out_actions_joined) - 1);
+                                    }
+                                    if (strlen(out_actions_joined) + 2 < max_actions) {
+                                        strncat(out_actions_joined, it->valuestring, max_actions - strlen(out_actions_joined) - 1);
+                                    }
+                                }
+                            }
+                        }
+                        cJSON_Delete(structured);
+                    } else {
+                        // Graceful fallback if non-JSON string ever arrives
+                        strncpy(out_reply_utf8, content->valuestring, max_reply - 1);
+                        out_reply_utf8[max_reply - 1] = '\0';
+                    }
+
+                    // Store clean reply in short-term history (never stores action tags!)
+                    tars_push_history(raw_transcript, out_reply_utf8[0] ? out_reply_utf8 : "Komut uygulandi.");
+                    cJSON_Delete(resp_json);
+                    res = TARS_RES_OK;
+                    break;
+                }
+                if (resp_json) cJSON_Delete(resp_json);
             }
-            res = TARS_RES_OK;
-        } else {
-            ESP_LOGW(TAG, "Groq SSE Chat failed (err=%s, http=%d)", esp_err_to_name(err), status_code);
+
+            ESP_LOGW(TAG, "Groq JSON Chat attempt %d failed (err=%s, http=%d, len=%u, body='%.120s') -> resetting TLS",
+                     attempt + 1, esp_err_to_name(err), status_code, (unsigned)s_http_ctx.json_len, resp_mem);
             tars_reset_groq_client();
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
+        free(chat_body);
     }
 
-    // Immediately restore Wi-Fi low-power modem sleep!
-    wifi_manager_set_turbo(false);
-
     int64_t t_done = esp_timer_get_time();
-    out_stats->first_tok_ms = (s_http_ctx.first_token_us > t_chat_start) ? (int)((s_http_ctx.first_token_us - t_chat_start) / 1000) : 0;
-    out_stats->action_ms = (s_http_ctx.action_us > t_pipe_start) ? (int)((s_http_ctx.action_us - t_pipe_start) / 1000) : 0;
+    out_stats->llm_ms = (int)((t_done - t_chat_start) / 1000);
     out_stats->total_ms = (int)((t_done - t_pipe_start) / 1000);
-    out_stats->action_fired_live = s_http_ctx.action_fired;
-    strncpy(out_stats->live_action_badge, s_http_ctx.action_badge, sizeof(out_stats->live_action_badge) - 1);
 
-    ESP_LOGI(TAG, "=== [TARS-3X TIMING] wav=%uKB(ulaw) warmTLS=%d | STT=%dms | 1stTok=%dms | Action=%dms | Total=%dms ===",
-             (unsigned)(wav_len / 1024), (int)out_stats->was_warm_tls,
-             out_stats->stt_ms, out_stats->first_tok_ms, out_stats->action_ms, out_stats->total_ms);
+    ESP_LOGI(TAG, "=== [TARS-4.0] wav=%uKB | STT=%dms | LLM=%dms | Total=%dms | actions='%s' ===",
+             (unsigned)(wav_len / 1024), out_stats->stt_ms, out_stats->llm_ms, out_stats->total_ms, out_actions_joined);
 
-    if (chat_body) free(chat_body);
     free(raw_transcript);
     free(resp_mem);
-    free(sse_line);
-    free(ui_ascii);
     display_manager_reset_timer();
     return res;
 }
@@ -1443,13 +1757,16 @@ extern "C" void app_tars_handle_reply_from_ble(const char* payload) {
     char* clean_reply = (char*)heap_caps_calloc(1, TARS_TEXT_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!clean_reply) return;
     char action_badge[64] = {0};
-    tars_finalize_reply(payload, false, clean_reply, TARS_TEXT_CAP, action_badge, sizeof(action_badge));
+    tars_finalize_reply(payload, nullptr, clean_reply, TARS_TEXT_CAP, action_badge, sizeof(action_badge));
 
     if (s_tars_instance && s_tars_instance->is_open()) {
-        s_tars_instance->update_ui_state("ELLER SERBEST DINLIYOR...", 0x00E676, 0, nullptr, clean_reply, action_badge);
+        s_tars_instance->set_visual_state(TARS_VIS_REPLY, 40);
+        s_tars_instance->update_ui_state("HAZIR - ELLER SERBEST", 0x00E676, 0, nullptr, clean_reply, action_badge);
     } else {
         display_manager_turn_on();
         s_wake_pill_dismissed = false;
+        s_wake_vis_state = TARS_VIS_REPLY;
+        s_wake_countdown_active = false;
         update_wake_pill_ui("TARS // YANIT (Dokun: Kapat)", clean_reply, 0x00E676, true);
     }
     free(clean_reply);
@@ -1457,7 +1774,7 @@ extern "C" void app_tars_handle_reply_from_ble(const char* payload) {
 
 // Unified Background Worker Task for both 4.5s Triple-Tap Wake Window & Full Hands-Free App Mode
 static void tars_worker_loop(void* pv) {
-    ESP_LOGI(TAG, "TARS 3X TURBO Worker started (Warm TLS + u-Law 2x + SSE Stream + 12s Long Speech)");
+    ESP_LOGI(TAG, "TARS v4.0 Worker started (Strict JSON Schema + Zero-Drop UI Mailbox + Honest PC Control)");
     tars_load_api_key();
 
     int16_t* pcm_buf = (int16_t*)heap_caps_malloc(TARS_MAX_PCM_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -1470,11 +1787,9 @@ static void tars_worker_loop(void* pv) {
 
     while (true) {
         if (!s_tars_app_active && !s_tars_wake_window_req) {
-            // Release warm socket cleanly if Wi-Fi dropped or turned off by Smart 90s Auto-Off
             if (s_groq_client && !wifi_manager_is_connected()) {
                 tars_reset_groq_client();
             }
-            // Zero-CPU idle wait (instant 0ms wakeup via xTaskNotifyGive when Triple-Tap or TARS App triggers!)
             ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5000));
             continue;
         }
@@ -1491,16 +1806,9 @@ static void tars_worker_loop(void* pv) {
         s_tars_manual_toggle = false;
         s_wake_pill_dismissed = false;
 
-        // Pre-warm Home Wi-Fi + Persistent TLS 1.3 inside TARS App BEFORE user even speaks!
-        if (!is_wake_window) {
-            if (!wifi_manager_is_active()) {
-                wifi_manager_start_async();
-            } else if (wifi_manager_is_connected() && !s_groq_warm) {
-                if (s_tars_instance) {
-                    s_tars_instance->update_ui_state("TURBO HAT ISITILIYOR...", 0x00E5FF, 0, nullptr, nullptr, nullptr);
-                }
-                tars_prewarm_groq_tls();
-            }
+        // Bring up Home Wi-Fi in background WITHOUT interrupting the mic!
+        if (!is_wake_window && !wifi_manager_is_active()) {
+            wifi_manager_start_async();
         }
 
         esp_codec_dev_handle_t mic = bsp_get_shared_mic_codec();
@@ -1535,10 +1843,15 @@ static void tars_worker_loop(void* pv) {
         esp_codec_dev_set_in_gain(mic, 30.0);
 
         if (is_wake_window) {
-            update_wake_pill_ui(LV_SYMBOL_AUDIO " TARS DINLIYOR (4.5 sn)", "Komutunu veya sorununuzu soyleyin...", 0x00E5FF, true);
+            s_wake_vis_state = TARS_VIS_LISTEN;
+            s_wake_mic_pct = 15;
+            s_wake_countdown_active = true;
+            s_wake_listen_start_us = esp_timer_get_time();
+            update_wake_pill_ui("TARS // DINLIYOR", "Konusabilirsin Eymen...", 0x00E5FF, true);
         } else if (s_tars_instance) {
-            s_tars_instance->update_ui_state(s_groq_warm ? "TURBO HAZIR (0ms TLS) - KONUS" : "ELLER SERBEST DINLIYOR...",
-                                             0x00E676, 5, nullptr, nullptr, nullptr, LV_SYMBOL_AUDIO " Konusmayi Baslat");
+            s_tars_instance->set_visual_state(TARS_VIS_IDLE, 0);
+            s_tars_instance->update_ui_state("HAZIR - ELLER SERBEST",
+                                             0x00E676, 0, nullptr, nullptr, nullptr, LV_SYMBOL_AUDIO " Konus");
         }
 
         // Hands-Free Adaptive VAD Loop (DC-Removed + 192ms Pre-Roll + Smart Dynamic Silence Cutoff)
@@ -1565,7 +1878,6 @@ static void tars_worker_loop(void* pv) {
                 continue;
             }
 
-            // DC-removed frame energy (512 samples = 32ms at 16kHz)
             int64_t dc_sum = 0;
             for (int i = 0; i < TARS_FRAME_SAMPLES; i++) dc_sum += frame_buf[i];
             int32_t dc_avg = (int32_t)(dc_sum / TARS_FRAME_SAMPLES);
@@ -1578,6 +1890,9 @@ static void tars_worker_loop(void* pv) {
             uint32_t mean_abs = (uint32_t)(sum_abs / TARS_FRAME_SAMPLES);
             int level_pct = (int)((mean_abs * 100) / 3000);
             if (level_pct > 100) level_pct = 100;
+            if (is_wake_window) {
+                s_wake_mic_pct = level_pct;
+            }
 
             if (!speech_started) {
                 memcpy(preroll_ring + (preroll_idx * TARS_FRAME_SAMPLES), frame_buf, TARS_FRAME_BYTES);
@@ -1619,9 +1934,12 @@ static void tars_worker_loop(void* pv) {
                         }
 
                         if (is_wake_window) {
-                            update_wake_pill_ui(LV_SYMBOL_AUDIO " TARS SENI DINLIYOR", "Konusmaya devam edebilirsin...", 0x00E676, true);
+                            s_wake_vis_state = TARS_VIS_LISTEN;
+                            s_wake_countdown_active = false;
+                            update_wake_pill_ui("TARS // SENI DINLIYOR", "Konusmaya devam edebilirsin...", 0x00E676, true);
                         } else if (s_tars_instance) {
-                            s_tars_instance->update_ui_state("KONUSMA ALGILANDI...", 0xFFA000, level_pct, "Dinleniyor...", nullptr, nullptr, LV_SYMBOL_OK " Gonder (Bitir)");
+                            s_tars_instance->set_visual_state(TARS_VIS_LISTEN, level_pct);
+                            s_tars_instance->update_ui_state("DINLIYOR...", 0xFFA000, level_pct, "Dinleniyor...", nullptr, nullptr, LV_SYMBOL_OK " Gonder");
                         }
                     }
                 } else {
@@ -1632,16 +1950,6 @@ static void tars_worker_loop(void* pv) {
                 if (is_wake_window && waited_ms >= 4500) {
                     s_tars_wake_window_req = false;
                     break;
-                }
-
-                // Inside TARS App, if Wi-Fi just got IP while idle and TLS isn't warm yet, break briefly to warm TLS!
-                if (!is_wake_window && !s_groq_warm && wifi_manager_is_connected() && waited_ms > 400) {
-                    break;
-                }
-
-                if (!is_wake_window && s_tars_instance && (waited_ms % 160 < 40)) {
-                    s_tars_instance->update_ui_state(s_groq_warm ? "TURBO HAZIR (0ms TLS) - KONUS" : "ELLER SERBEST DINLIYOR...",
-                                                     0x00E676, level_pct, nullptr, nullptr, nullptr);
                 }
             } else {
                 display_manager_reset_timer();
@@ -1660,16 +1968,15 @@ static void tars_worker_loop(void* pv) {
                 }
 
                 uint32_t rec_ms = (xTaskGetTickCount() - speech_start_tick) * portTICK_PERIOD_MS;
-                if (!is_wake_window && s_tars_instance && ((samples_written / TARS_FRAME_SAMPLES) % 5 == 0)) {
-                    char rec_hdr[48];
-                    snprintf(rec_hdr, sizeof(rec_hdr), "KAYDEDILIYOR (%.1f sn)...", (float)rec_ms / 1000.0f);
-                    s_tars_instance->update_ui_state(rec_hdr, 0xFFA000, level_pct, nullptr, nullptr, nullptr);
+                if (!is_wake_window && s_tars_instance) {
+                    s_tars_instance->set_visual_state(TARS_VIS_LISTEN, level_pct);
+                    if ((samples_written / TARS_FRAME_SAMPLES) % 6 == 0) {
+                        char rec_hdr[48];
+                        snprintf(rec_hdr, sizeof(rec_hdr), "DINLIYOR (%.1f sn)...", (float)rec_ms / 1000.0f);
+                        s_tars_instance->update_ui_state(rec_hdr, 0xFFA000, level_pct, nullptr, nullptr, nullptr);
+                    }
                 }
 
-                // Smart Adaptive Silence Cutoff (saves ~350-500ms vs fixed timeout without chopping "TARS... [pause]"):
-                // - < 1.4s speech: 34 frames (~1.08s) so wake-word pause never cuts off
-                // - 1.4s..3.5s speech: 24 frames (~768ms) snappy end-of-command
-                // - > 3.5s long sentence: 19 frames (~608ms) super fast end-of-sentence
                 int stop_silence_frames = manual_rec_mode ? 50 : ((rec_ms < 1400) ? 34 : (rec_ms < 3500) ? 24 : 19);
                 bool manual_finish = s_tars_manual_toggle;
                 if (manual_finish) s_tars_manual_toggle = false;
@@ -1685,7 +1992,6 @@ static void tars_worker_loop(void* pv) {
         bsp_audio_standby();
         bsp_audio_unlock();
 
-        // Trim trailing dead silence (keep ~220ms tail)
         size_t trail_trim_samples = (silent_frames > 9) ? (size_t)((silent_frames - 7) * TARS_FRAME_SAMPLES) : 0;
         if (trail_trim_samples > 0 && samples_written > trail_trim_samples + 4096) {
             samples_written -= trail_trim_samples;
@@ -1699,12 +2005,12 @@ static void tars_worker_loop(void* pv) {
             continue;
         }
 
-        // Encode DC-removed + AGC-normalized speech into 2x smaller 16kHz u-Law WAV (<1ms CPU!)
         size_t ulaw_wav_len = tars_encode_ulaw_wav(pcm_buf, samples_written, ulaw_wav_buf);
 
         transcript[0] = '\0';
         raw_reply[0] = '\0';
         clean_reply[0] = '\0';
+        char structured_actions[256] = {0};
         char action_badge[64] = {0};
         TarsTimingStats stats = {};
 
@@ -1712,10 +2018,12 @@ static void tars_worker_loop(void* pv) {
             ulaw_wav_buf, ulaw_wav_len, is_wake_window,
             transcript, TARS_TEXT_CAP,
             raw_reply, TARS_TEXT_CAP,
+            structured_actions, sizeof(structured_actions),
             &stats
         );
 
         if (res == TARS_RES_SILENCE_HALLUCINATION) {
+            wifi_manager_set_turbo(false);
             if (is_wake_window) {
                 s_tars_wake_window_req = false;
                 update_wake_pill_ui("TARS", "Anlasilabilir bir konusma duyulmamis gibi. Tekrar deneyebilirsin.", 0x9E9E9E, true);
@@ -1725,7 +2033,8 @@ static void tars_worker_loop(void* pv) {
                 }
                 update_wake_pill_ui(nullptr, nullptr, 0, false);
             } else if (s_tars_instance) {
-                s_tars_instance->update_ui_state("ANLASILMADI - TEKRAR KONUS", 0x9E9E9E, 0, nullptr, nullptr, "EYLEM: YOK", LV_SYMBOL_AUDIO " Konusmayi Baslat");
+                s_tars_instance->set_visual_state(TARS_VIS_IDLE, 0);
+                s_tars_instance->update_ui_state("ANLASILMADI - TEKRAR KONUS", 0x9E9E9E, 0, nullptr, nullptr, "EYLEM: YOK", LV_SYMBOL_AUDIO " Konus");
                 vTaskDelay(pdMS_TO_TICKS(350));
             }
             continue;
@@ -1739,17 +2048,17 @@ static void tars_worker_loop(void* pv) {
                 strncpy(transcript, "(Cevrimdisi Mod)", TARS_TEXT_CAP - 1);
             }
             tars_local_turkish_fallback(transcript, reason, raw_reply, TARS_TEXT_CAP);
+            structured_actions[0] = '\0';
         }
 
-        if (stats.action_fired_live) {
-            strncpy(action_badge, stats.live_action_badge, sizeof(action_badge) - 1);
-        }
-        tars_finalize_reply(raw_reply, stats.action_fired_live, clean_reply, TARS_TEXT_CAP, action_badge, sizeof(action_badge), transcript);
+        // Execute PC/TV/Home actions BEFORE dropping Wi-Fi turbo mode!
+        tars_finalize_reply(raw_reply, structured_actions, clean_reply, TARS_TEXT_CAP, action_badge, sizeof(action_badge), transcript);
+        wifi_manager_set_turbo(false);
 
         char speed_hdr[64];
         if (res == TARS_RES_OK) {
-            snprintf(speed_hdr, sizeof(speed_hdr), "TARS 3X // %dms (STT:%d AI:%d)",
-                     stats.total_ms, stats.stt_ms, stats.first_tok_ms);
+            snprintf(speed_hdr, sizeof(speed_hdr), "TARS 4.0 // %dms (STT:%d AI:%d)",
+                     stats.total_ms, stats.stt_ms, stats.llm_ms);
         } else {
             snprintf(speed_hdr, sizeof(speed_hdr), "TARS // YANIT (Dokun: Kapat)");
         }
@@ -1757,6 +2066,8 @@ static void tars_worker_loop(void* pv) {
         if (is_wake_window) {
             s_tars_wake_window_req = false;
             s_wake_pill_dismissed = false;
+            s_wake_vis_state = TARS_VIS_REPLY;
+            s_wake_countdown_active = false;
             uint32_t card_col = (res == TARS_RES_OK) ? 0x00E676 : 0xFFA000;
             update_wake_pill_ui(speed_hdr, clean_reply, card_col, true);
             for (int t = 0; t < 13 && !s_wake_pill_dismissed && !s_tars_app_active && display_manager_is_on(); t++) {
@@ -1767,13 +2078,14 @@ static void tars_worker_loop(void* pv) {
         } else if (s_tars_instance) {
             char app_status[64];
             if (res == TARS_RES_OK) {
-                snprintf(app_status, sizeof(app_status), "HIZ: %dms (STT:%d | 1.Tok:%d)",
-                         stats.total_ms, stats.stt_ms, stats.first_tok_ms);
+                snprintf(app_status, sizeof(app_status), "HIZ: %dms (STT:%d | AI:%d)",
+                         stats.total_ms, stats.stt_ms, stats.llm_ms);
             } else {
-                snprintf(app_status, sizeof(app_status), "ELLER SERBEST DINLIYOR...");
+                snprintf(app_status, sizeof(app_status), "HAZIR - ELLER SERBEST");
             }
-            s_tars_instance->update_ui_state(app_status, 0x00E676, 0, transcript, clean_reply, action_badge, LV_SYMBOL_AUDIO " Konusmayi Baslat");
-            vTaskDelay(pdMS_TO_TICKS(400));
+            s_tars_instance->set_visual_state(TARS_VIS_REPLY, 40);
+            s_tars_instance->update_ui_state(app_status, 0x00E676, 0, transcript, clean_reply, action_badge, LV_SYMBOL_AUDIO " Konus");
+            vTaskDelay(pdMS_TO_TICKS(450));
         }
     }
 }
@@ -1813,16 +2125,87 @@ static void on_tars_back_clicked(lv_event_t* e) {
     }
 }
 
+// ============================================================================
+// 1-BIT PIXEL TARS MONOLITH LIVE AMOLED ENGINE (44x24 grid @ P=8 -> 352x192)
+// Stored 100% in Octal PSRAM (132 KB) - ZERO Internal SRAM overhead!
+// ============================================================================
+static constexpr int TARS_MONO_GW = 44;
+static constexpr int TARS_MONO_GH = 24;
+static constexpr int TARS_MONO_P  = 8;
+static constexpr int TARS_MONO_W  = TARS_MONO_GW * TARS_MONO_P; // 352
+static constexpr int TARS_MONO_H  = TARS_MONO_GH * TARS_MONO_P; // 192
+
+static uint16_t* s_monolith_buf = nullptr;
+static lv_image_dsc_t s_monolith_dsc = {
+    .header = {
+        .magic = LV_IMAGE_HEADER_MAGIC,
+        .cf = LV_COLOR_FORMAT_RGB565,
+        .flags = 0,
+        .w = TARS_MONO_W,
+        .h = TARS_MONO_H,
+        .stride = TARS_MONO_W * 2,
+        .reserved_2 = 0
+    },
+    .data_size = TARS_MONO_W * TARS_MONO_H * 2,
+    .data = nullptr,
+    .reserved = NULL
+};
+
+static inline void mono_px(uint16_t* buf, int gx, int gy, int gw, int gh, uint16_t col) {
+    mono_px_s(buf, TARS_MONO_W, TARS_MONO_H, TARS_MONO_P, gx, gy, gw, gh, col);
+}
+
+static void mono_draw_tars_word(uint16_t* buf, int gx, int gy, uint16_t col) {
+    mono_draw_tars_word_s(buf, TARS_MONO_W, TARS_MONO_H, TARS_MONO_P, gx, gy, col);
+}
+
+static void mono_draw_z(uint16_t* buf, int gx, int gy, uint16_t col) {
+    mono_px(buf, gx, gy, 3, 1, col);
+    mono_px(buf, gx + 2, gy + 1, 1, 1, col);
+    mono_px(buf, gx + 1, gy + 2, 1, 1, col);
+    mono_px(buf, gx, gy + 3, 1, 1, col);
+    mono_px(buf, gx, gy + 4, 3, 1, col);
+}
+
+// Zero-Drop Cross-Thread UI Mailbox (background worker NEVER blocks on bsp_display_lock!)
+struct TarsUiMailbox {
+    bool has_status;
+    char status[72];
+    uint32_t status_color;
+    bool has_user;
+    char user[256];
+    bool has_tars;
+    char tars[512];
+    bool has_action;
+    char action[96];
+    bool has_btn;
+    char btn[40];
+};
+static portMUX_TYPE s_ui_mux = portMUX_INITIALIZER_UNLOCKED;
+static TarsUiMailbox s_ui_mb = {};
+
+static void on_tars_anim_timer(lv_timer_t* timer) {
+    AppTars* app = (AppTars*)lv_timer_get_user_data(timer);
+    if (app && app->is_open()) {
+        app->render_monolith_frame();
+    }
+}
+
 AppTars* AppTars::get_instance() {
     return s_tars_instance;
 }
 
 AppTars::AppTars()
     : esp_brookesia::systems::phone::App("TARS", &icon_voice_recorder, true),
-      _bg_obj(nullptr), _btn_back(nullptr), _params_label(nullptr), _status_label(nullptr),
-      _level_bar(nullptr), _dialog_card(nullptr), _user_label(nullptr), _tars_label(nullptr),
-      _action_badge(nullptr), _btn_humor(nullptr), _btn_test(nullptr), _btn_test_label(nullptr),
-      _humor_pct(75), _honesty_pct(90) {
+      _bg_obj(nullptr), _btn_back(nullptr), _title_label(nullptr), _params_label(nullptr),
+      _btn_tone(nullptr), _btn_tone_label(nullptr), _monolith_img(nullptr), _status_label(nullptr),
+      _dialog_card(nullptr), _user_label(nullptr), _tars_label(nullptr), _action_badge(nullptr),
+      _btn_turbo(nullptr), _btn_turbo_label(nullptr), _btn_humor(nullptr), _btn_humor_label(nullptr),
+      _btn_test(nullptr), _btn_test_label(nullptr), _anim_timer(nullptr),
+      _humor_pct(75), _honesty_pct(90), _monolith_tone(0), _monolith_style(0),
+      _turbo_mode(false), _vis_state(TARS_VIS_IDLE), _live_mic_pct(0),
+      _reply_anim_until_us(0), _cached_bat_pct(100), _cached_charging(false),
+      _last_bat_check_us(0), _anim_frame(0), _idle_skip_div(0) {
     s_tars_instance = this;
 }
 
@@ -1832,11 +2215,387 @@ AppTars::~AppTars() {
     }
 }
 
+void AppTars::load_ui_prefs() {
+    nvs_handle_t h;
+    if (nvs_open("tars_cfg", NVS_READONLY, &h) == ESP_OK) {
+        int32_t v = 0;
+        if (nvs_get_i32(h, "ui_tone", &v) == ESP_OK && v >= 0 && v < 4) _monolith_tone = (int)v;
+        if (nvs_get_i32(h, "ui_style", &v) == ESP_OK && v >= 0 && v < 3) _monolith_style = (int)v;
+        if (nvs_get_i32(h, "humor_pct", &v) == ESP_OK && v >= 0 && v <= 100) _humor_pct = (int)v;
+        nvs_close(h);
+    }
+}
+
+void AppTars::save_ui_prefs() {
+    s_shared_ui_tone = _monolith_tone;
+    s_shared_ui_style = _monolith_style;
+    s_shared_prefs_loaded = true;
+    nvs_handle_t h;
+    if (nvs_open("tars_cfg", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_i32(h, "ui_tone", _monolith_tone);
+        nvs_set_i32(h, "ui_style", _monolith_style);
+        nvs_set_i32(h, "humor_pct", _humor_pct);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+void AppTars::set_visual_state(TarsVisState state, int mic_level_pct) {
+    _vis_state = (int)state;
+    if (mic_level_pct >= 0) {
+        _live_mic_pct = (mic_level_pct > 100) ? 100 : mic_level_pct;
+    }
+    if (state == TARS_VIS_REPLY) {
+        _reply_anim_until_us = esp_timer_get_time() + 2600000LL;
+    }
+}
+
+void AppTars::set_turbo_mode(bool enabled) {
+    _turbo_mode = enabled;
+}
+
+void AppTars::cycle_tone() {
+    _monolith_tone = (_monolith_tone + 1) % 4;
+    save_ui_prefs();
+    apply_theme_chrome();
+    _idle_skip_div = 0;
+    render_monolith_frame();
+    bsp_vibrate_pulse(25);
+}
+
+void AppTars::cycle_style() {
+    _monolith_style = (_monolith_style + 1) % 3;
+    save_ui_prefs();
+    apply_theme_chrome();
+    _idle_skip_div = 0;
+    render_monolith_frame();
+    bsp_vibrate_pulse(25);
+}
+
+void AppTars::apply_theme_chrome() {
+    if (!_bg_obj) return;
+    bool low_bat = (!_turbo_mode && _cached_bat_pct > 0 && _cached_bat_pct < 15 && !_cached_charging);
+    const TarsMonoPalette& pal = _turbo_mode ? kTarsTurboPal : (low_bat ? kTarsLowBatPal : kTarsPalettes[_monolith_tone]);
+
+    if (_title_label) {
+        lv_label_set_text(_title_label, _turbo_mode ? "TARS // TURBO" : "TARS");
+        lv_obj_set_style_text_color(_title_label, lv_color_hex(pal.fg), 0);
+    }
+    if (_params_label) {
+        lv_label_set_text_fmt(_params_label, "%s | MIZAH %%%d | PIL %%%d",
+                              kTarsStyleNames[_monolith_style], _humor_pct, _cached_bat_pct);
+        lv_obj_set_style_text_color(_params_label, lv_color_hex(pal.mid), 0);
+    }
+    if (_btn_tone) {
+        lv_obj_set_style_border_color(_btn_tone, lv_color_hex(pal.mid), 0);
+        if (_btn_tone_label) {
+            lv_label_set_text(_btn_tone_label, kTarsPalettes[_monolith_tone].name);
+            lv_obj_set_style_text_color(_btn_tone_label, lv_color_hex(pal.fg), 0);
+        }
+    }
+    if (_monolith_img) {
+        lv_obj_set_style_border_color(_monolith_img, lv_color_hex(pal.mid), 0);
+    }
+    if (_dialog_card) {
+        lv_obj_set_style_border_color(_dialog_card, lv_color_hex(pal.mid), 0);
+    }
+    if (_action_badge) {
+        lv_obj_set_style_text_color(_action_badge, lv_color_hex(pal.acc), 0);
+    }
+    if (_btn_turbo) {
+        lv_obj_set_style_bg_color(_btn_turbo, lv_color_hex(_turbo_mode ? 0xB91C1C : 0x1C222D), 0);
+        lv_obj_set_style_border_color(_btn_turbo, lv_color_hex(_turbo_mode ? 0xF87171 : 0x334155), 0);
+        if (_btn_turbo_label) {
+            lv_obj_set_style_text_color(_btn_turbo_label, lv_color_hex(_turbo_mode ? 0xFFFFFF : 0xCBD5E1), 0);
+        }
+    }
+    if (_btn_humor_label) {
+        lv_label_set_text_fmt(_btn_humor_label, "M:%%%d", _humor_pct);
+    }
+}
+
+void AppTars::drain_ui_mailbox() {
+    if (!_bg_obj) return;
+    TarsUiMailbox local = {};
+    portENTER_CRITICAL(&s_ui_mux);
+    if (s_ui_mb.has_status || s_ui_mb.has_user || s_ui_mb.has_tars || s_ui_mb.has_action || s_ui_mb.has_btn) {
+        local = s_ui_mb;
+        s_ui_mb.has_status = false;
+        s_ui_mb.has_user = false;
+        s_ui_mb.has_tars = false;
+        s_ui_mb.has_action = false;
+        s_ui_mb.has_btn = false;
+    }
+    portEXIT_CRITICAL(&s_ui_mux);
+
+    if (local.has_status && _status_label) {
+        lv_label_set_text(_status_label, local.status);
+        lv_obj_set_style_text_color(_status_label, lv_color_hex(local.status_color), 0);
+    }
+    if (local.has_user && _user_label) {
+        lv_label_set_text_fmt(_user_label, "> SEN: \"%s\"", local.user);
+    }
+    if (local.has_tars && _tars_label) {
+        lv_label_set_text_fmt(_tars_label, "TARS: \"%s\"", local.tars);
+        if (_dialog_card) {
+            lv_obj_scroll_to_y(_dialog_card, 0, LV_ANIM_OFF);
+        }
+    }
+    if (local.has_action && _action_badge) {
+        lv_label_set_text(_action_badge, local.action);
+    }
+    if (local.has_btn && _btn_test_label) {
+        lv_label_set_text(_btn_test_label, local.btn);
+    }
+}
+
+void AppTars::render_monolith_frame() {
+    if (!_bg_obj || !_monolith_img || !s_monolith_buf) return;
+
+    // ALWAYS drain pending UI text/status updates FIRST on the LVGL thread (zero drops, zero lock contention!)
+    drain_ui_mailbox();
+
+    if (!display_manager_is_on()) return;
+
+    int64_t now_us = esp_timer_get_time();
+    static bool s_prev_turbo = false;
+    static bool s_prev_lowbat = false;
+
+    // Refresh battery every 5 seconds (lightweight PMIC read)
+    if (now_us - _last_bat_check_us > 5000000LL) {
+        _last_bat_check_us = now_us;
+        int pct = bsp_battery_get_percent();
+        if (pct >= 0 && pct <= 100) _cached_bat_pct = pct;
+        _cached_charging = bsp_battery_is_charging();
+        if (_params_label) {
+            lv_label_set_text_fmt(_params_label, "%s | MIZAH %%%d | PIL %%%d",
+                                  kTarsStyleNames[_monolith_style], _humor_pct, _cached_bat_pct);
+        }
+    }
+
+    int vis = _vis_state;
+    if (vis == TARS_VIS_REPLY && now_us > _reply_anim_until_us) {
+        vis = TARS_VIS_IDLE;
+        _vis_state = TARS_VIS_IDLE;
+    }
+
+    bool turbo = _turbo_mode;
+    bool low_bat = (!turbo && _cached_bat_pct > 0 && _cached_bat_pct < 15 && !_cached_charging &&
+                    vis != TARS_VIS_LISTEN && vis != TARS_VIS_THINK);
+
+    // Check for tone/style/turbo change
+    if (turbo != s_prev_turbo || low_bat != s_prev_lowbat) {
+        s_prev_turbo = turbo;
+        s_prev_lowbat = low_bat;
+        _idle_skip_div = 0;
+        apply_theme_chrome();
+    }
+
+    // Smart Adaptive FPS: 12.5 FPS (80ms) when active/Turbo; ~4 FPS (240ms) during quiet Idle/LowBat
+    // Slashes continuous PSRAM/QSPI DMA load by 75% so Wi-Fi, BLE, and Touch stay ultra-snappy!
+    if (vis == TARS_VIS_IDLE && !turbo) {
+        if ((_idle_skip_div++ % 3) != 0) {
+            return;
+        }
+    } else {
+        _idle_skip_div = 0;
+    }
+
+    const TarsMonoPalette& pal = turbo ? kTarsTurboPal : (low_bat ? kTarsLowBatPal : kTarsPalettes[_monolith_tone]);
+    const uint16_t c_black = 0x0000;
+    const uint16_t c_white = 0xFFFF;
+    const uint16_t c_fg    = tars_hex565(pal.fg);
+    const uint16_t c_mid   = tars_hex565(pal.mid);
+    const uint16_t c_dim   = tars_hex565(pal.dim);
+    const uint16_t c_acc   = tars_hex565(pal.acc);
+
+    // Clear 352x192 PSRAM RGB565 buffer to pure pitch-black AMOLED
+    memset(s_monolith_buf, 0, TARS_MONO_W * TARS_MONO_H * sizeof(uint16_t));
+
+    float t = (float)(now_us / 1000LL) * 0.001f; // Wall-clock seconds (smooth regardless of adaptive FPS!)
+    _anim_frame++;
+    float energy = (float)_live_mic_pct / 100.0f;
+    if (vis == TARS_VIS_LISTEN && energy < 0.15f) energy = 0.15f;
+
+    bool is_asym = (_monolith_style == 2) && !turbo;
+    const int widths[4] = {
+        is_asym ? 8 : 7,
+        8,
+        is_asym ? 7 : 8,
+        7
+    };
+    int sxList[4];
+    int curX = 5;
+    for (int i = 0; i < 4; i++) {
+        sxList[i] = curX;
+        curX += widths[i] + 1;
+    }
+
+    const int baseY = 2;
+    const int slabH = 20;
+
+    // 1. Draw 4 Articulated Brushed-Steel Pixel Slabs
+    for (int i = 0; i < 4; i++) {
+        int yShift = 0;
+        if (vis == TARS_VIS_LISTEN) {
+            int amp = (int)lroundf(energy * 2.2f);
+            if (amp > 2) amp = 2;
+            yShift = (i == 0 || i == 3) ? -amp : (int)lroundf(sinf(t * 12.0f + (float)i) * (float)amp * 0.5f);
+        } else if (vis == TARS_VIS_THINK) {
+            yShift = (int)lroundf(sinf(t * 5.5f + (float)i * 1.4f) * 2.0f);
+        } else if (turbo) {
+            yShift = (((int)(t * 14.0f) + i) % 2 == 0) ? -1 : 1;
+        }
+
+        int sx = sxList[i];
+        int sw = widths[i];
+        int sy = baseY + yShift;
+        if (sy < 1) sy = 1;
+        if (sy + slabH > TARS_MONO_GH - 1) sy = (TARS_MONO_GH - 1) - slabH;
+
+        mono_px(s_monolith_buf, sx, sy, sw, slabH, c_fg);
+        mono_px(s_monolith_buf, sx + sw - 1, sy, 1, slabH, c_mid);           // right metallic bevel
+        mono_px(s_monolith_buf, sx + 1, sy, sw - 3, 1, c_white);             // top machined edge
+        mono_px(s_monolith_buf, sx, sy + 14, sw, 1, c_black);                // lower articulation seam
+
+        uint16_t dotCol = turbo ? c_acc : c_black;
+        if (is_asym) {
+            if (i == 2) {
+                mono_px(s_monolith_buf, sx + 2, sy + 4, 3, 1, c_black);
+                mono_px(s_monolith_buf, sx + 2, sy + 6, 3, 1, c_black);
+                mono_px(s_monolith_buf, sx + 2, sy + 8, 3, 1, c_black);
+                mono_px(s_monolith_buf, sx + 2, sy + 11, 2, 1, low_bat ? c_dim : c_acc);
+            } else if (i == 3) {
+                mono_px(s_monolith_buf, sx + 2, sy + 4, 1, 1, dotCol);
+                mono_px(s_monolith_buf, sx + 4, sy + 4, 1, 1, dotCol);
+                mono_px(s_monolith_buf, sx + 2, sy + 7, 1, 1, dotCol);
+                mono_px(s_monolith_buf, sx + 4, sy + 10, 1, 1, dotCol);
+            }
+        } else if (i == 0 || i == 3) {
+            mono_px(s_monolith_buf, sx + 2, sy + 4, 1, 1, dotCol);
+            mono_px(s_monolith_buf, sx + 4, sy + 4, 1, 1, dotCol);
+            mono_px(s_monolith_buf, sx + 2, sy + 7, 1, 1, dotCol);
+            mono_px(s_monolith_buf, sx + 4, sy + 10, 1, 1, dotCol);
+        }
+
+        // Lower grip slots
+        mono_px(s_monolith_buf, sx + 2, sy + 16, 1, 3, c_mid);
+        mono_px(s_monolith_buf, sx + sw - 3, sy + 16, 1, 3, c_mid);
+    }
+
+    // 2. Glowing Crimson Vertical Joint Seams in Oyun / Turbo Mode
+    if (turbo) {
+        for (int g = 0; g < 3; g++) {
+            mono_px(s_monolith_buf, sxList[g] + widths[g], baseY + 2, 1, slabH - 4, c_acc);
+        }
+    }
+
+    // 3. Recessed Chest LCD Screen (17x10 pixels)
+    const int lx = is_asym ? sxList[0] : sxList[1];
+    const int ly = 5;
+    const int lw = 17;
+    const int lh = 10;
+
+    mono_px(s_monolith_buf, lx, ly, lw, lh, c_black);
+    mono_px(s_monolith_buf, lx, ly, lw, 1, c_mid); // top recessed bezel
+
+    if (vis == TARS_VIS_LISTEN) {
+        // Real-time 7-bar pixel voice equalizer driven by live ES7210 mic!
+        for (int b = 0; b < 7; b++) {
+            float wave = 0.45f + 0.55f * fabsf(sinf(t * 13.0f + (float)b * 0.9f));
+            int bh = (int)lroundf(energy * 7.8f * wave);
+            if (bh < 1) bh = 1;
+            if (bh > 7) bh = 7;
+            mono_px(s_monolith_buf, lx + 2 + b * 2, ly + lh - 1 - bh, 1, bh, (bh >= 5) ? c_acc : c_fg);
+        }
+    } else if (vis == TARS_VIS_THINK) {
+        // Rotating 1-bit pixel spinner
+        int step = ((int)(t * 8.0f)) % 4;
+        int cx = lx + lw / 2;
+        int cy = ly + lh / 2;
+        mono_px(s_monolith_buf, cx, cy, 1, 1, c_acc);
+        if (step == 0) {
+            mono_px(s_monolith_buf, cx, cy - 2, 1, 2, c_fg);
+            mono_px(s_monolith_buf, cx, cy + 1, 1, 2, c_fg);
+        } else if (step == 1) {
+            mono_px(s_monolith_buf, cx + 1, cy - 1, 1, 1, c_fg);
+            mono_px(s_monolith_buf, cx + 2, cy - 2, 1, 1, c_fg);
+            mono_px(s_monolith_buf, cx - 1, cy + 1, 1, 1, c_fg);
+            mono_px(s_monolith_buf, cx - 2, cy + 2, 1, 1, c_fg);
+        } else if (step == 2) {
+            mono_px(s_monolith_buf, cx - 2, cy, 2, 1, c_fg);
+            mono_px(s_monolith_buf, cx + 1, cy, 2, 1, c_fg);
+        } else {
+            mono_px(s_monolith_buf, cx - 1, cy - 1, 1, 1, c_fg);
+            mono_px(s_monolith_buf, cx - 2, cy - 2, 1, 1, c_fg);
+            mono_px(s_monolith_buf, cx + 1, cy + 1, 1, 1, c_fg);
+            mono_px(s_monolith_buf, cx + 2, cy + 2, 1, 1, c_fg);
+        }
+    } else if (turbo) {
+        // EXACT Oyun / Turbo slanted red visor eyes + Knight-Rider scan bar!
+        int mid = lx + lw / 2;
+        mono_px(s_monolith_buf, mid - 6, ly + 2, 2, 1, c_acc);
+        mono_px(s_monolith_buf, mid - 5, ly + 3, 3, 2, c_fg);
+        mono_px(s_monolith_buf, mid + 4, ly + 2, 2, 1, c_acc);
+        mono_px(s_monolith_buf, mid + 2, ly + 3, 3, 2, c_fg);
+        int span = lw - 6; // 11
+        int raw = ((int)(t * 16.0f)) % (span * 2);
+        int phase = (raw < span) ? raw : (span * 2 - raw);
+        mono_px(s_monolith_buf, lx + 2 + phase, ly + lh - 2, 3, 1, c_acc);
+    } else if (low_bat) {
+        // Blinking low-battery pixel icon + floating pixel Z
+        int bx = lx + 4;
+        int by = ly + 3;
+        mono_px(s_monolith_buf, bx, by, 8, 5, c_mid);
+        mono_px(s_monolith_buf, bx + 1, by + 1, 6, 3, c_black);
+        mono_px(s_monolith_buf, bx + 8, by + 1, 1, 3, c_mid);
+        if (sinf(t * 3.0f) > 0.0f) {
+            mono_px(s_monolith_buf, bx + 2, by + 2, 1, 1, c_acc);
+        }
+        int zf = ((int)(t * 2.0f)) % 2;
+        mono_draw_z(s_monolith_buf, 39, 1 + zf, c_acc);
+    } else if (vis == TARS_VIS_REPLY) {
+        // Crisp "TARS" + subtle talking waveform strip underneath
+        mono_draw_tars_word(s_monolith_buf, lx + 1, ly + 1, c_fg);
+        for (int b = 0; b < 7; b++) {
+            int bh = (sinf(t * 14.0f + (float)b * 1.6f) > 0.1f) ? 2 : 1;
+            mono_px(s_monolith_buf, lx + 2 + b * 2, ly + lh - bh, 1, bh, c_acc);
+        }
+    } else {
+        // === AUTHENTIC FACELESS INTERSTELLAR IDLE ("TARS") ===
+        mono_draw_tars_word(s_monolith_buf, lx + 1, ly + 2, c_fg);
+        if (_monolith_style == 0) {
+            // Saf Film TARS: slow scanning hardware track + blinking terminal dot
+            mono_px(s_monolith_buf, lx + 1, ly + lh - 2, lw - 2, 1, c_dim);
+            int sweep = ((int)(t * 4.0f)) % (lw - 4);
+            mono_px(s_monolith_buf, lx + 1 + sweep, ly + lh - 2, 3, 1, c_acc);
+        } else if (_monolith_style == 1) {
+            // NASA Telemetri: live Humor % bar + pulsing readiness bar
+            mono_px(s_monolith_buf, lx + 1, ly + 8, lw - 2, 1, c_dim);
+            int hbar = (_humor_pct * (lw - 2)) / 100;
+            if (hbar < 1) hbar = 1;
+            mono_px(s_monolith_buf, lx + 1, ly + 8, hbar, 1, c_acc);
+            int pulse = 4 + (int)lroundf((sinf(t * 2.2f) + 1.0f) * 3.5f);
+            if (pulse > lw - 2) pulse = lw - 2;
+            mono_px(s_monolith_buf, lx + 1, ly + 9, pulse, 1, c_mid);
+        } else {
+            // Asimetrik Orijinal: blinking block cursor + calm telemetry rail
+            if (((int)(t * 2.2f)) % 2 == 0) {
+                mono_px(s_monolith_buf, lx + 1, ly + 8, 2, 1, c_acc);
+            }
+            mono_px(s_monolith_buf, lx + 4, ly + 8, lw - 6, 1, c_mid);
+        }
+    }
+
+    lv_obj_invalidate(_monolith_img);
+}
+
 void AppTars::set_humor(int h) {
     _humor_pct = h;
-    if (_params_label && bsp_display_lock(100)) {
-        if (_params_label) {
-            lv_label_set_text_fmt(_params_label, "MIZAH: %%%d  |  DURUSTLUK: %%%d", _humor_pct, _honesty_pct);
+    save_ui_prefs();
+    if (_bg_obj && bsp_display_lock(100)) {
+        if (_bg_obj) {
+            apply_theme_chrome();
         }
         bsp_display_unlock();
     }
@@ -1845,61 +2604,85 @@ void AppTars::set_humor(int h) {
 void AppTars::update_ui_state(const char* status_text, uint32_t status_color, int mic_level_pct,
                               const char* user_text, const char* tars_text, const char* action_text,
                               const char* trigger_btn_text) {
-    if (!_bg_obj || !bsp_display_lock(100)) return;
-    if (!_bg_obj) {
-        bsp_display_unlock();
-        return;
+    if (mic_level_pct >= 0) {
+        _live_mic_pct = (mic_level_pct > 100) ? 100 : mic_level_pct;
     }
-
-    if (status_text && _status_label) {
-        lv_label_set_text(_status_label, status_text);
-        lv_obj_set_style_text_color(_status_label, lv_color_hex(status_color), 0);
+    // Non-blocking <5us write into UI Mailbox (LVGL timer drains on UI thread -> ZERO dropped replies!)
+    portENTER_CRITICAL(&s_ui_mux);
+    if (status_text) {
+        strncpy(s_ui_mb.status, status_text, sizeof(s_ui_mb.status) - 1);
+        s_ui_mb.status[sizeof(s_ui_mb.status) - 1] = '\0';
+        s_ui_mb.status_color = status_color;
+        s_ui_mb.has_status = true;
     }
-    if (_level_bar && mic_level_pct >= 0) {
-        lv_bar_set_value(_level_bar, mic_level_pct, LV_ANIM_OFF);
+    if (user_text) {
+        strncpy(s_ui_mb.user, user_text, sizeof(s_ui_mb.user) - 1);
+        s_ui_mb.user[sizeof(s_ui_mb.user) - 1] = '\0';
+        s_ui_mb.has_user = true;
     }
-    if (user_text && _user_label) {
-        lv_label_set_text_fmt(_user_label, "SEN: \"%s\"", user_text);
+    if (tars_text) {
+        strncpy(s_ui_mb.tars, tars_text, sizeof(s_ui_mb.tars) - 1);
+        s_ui_mb.tars[sizeof(s_ui_mb.tars) - 1] = '\0';
+        s_ui_mb.has_tars = true;
     }
-    if (tars_text && _tars_label) {
-        lv_label_set_text_fmt(_tars_label, "TARS: \"%s\"", tars_text);
-        if (_dialog_card) {
-            lv_obj_scroll_to_y(_dialog_card, 0, LV_ANIM_OFF);
-        }
+    if (action_text) {
+        strncpy(s_ui_mb.action, action_text, sizeof(s_ui_mb.action) - 1);
+        s_ui_mb.action[sizeof(s_ui_mb.action) - 1] = '\0';
+        s_ui_mb.has_action = true;
     }
-    if (action_text && _action_badge) {
-        lv_label_set_text(_action_badge, action_text);
+    if (trigger_btn_text) {
+        strncpy(s_ui_mb.btn, trigger_btn_text, sizeof(s_ui_mb.btn) - 1);
+        s_ui_mb.btn[sizeof(s_ui_mb.btn) - 1] = '\0';
+        s_ui_mb.has_btn = true;
     }
-    if (trigger_btn_text && _btn_test_label) {
-        lv_label_set_text(_btn_test_label, trigger_btn_text);
-    }
-
-    bsp_display_unlock();
+    portEXIT_CRITICAL(&s_ui_mux);
 }
 
 bool AppTars::run() {
     if (_bg_obj != nullptr) return true;
 
-    display_manager_set_timeout(120000);
-    update_wake_pill_ui(nullptr, nullptr, 0, false);
+    portENTER_CRITICAL(&s_ui_mux);
+    memset(&s_ui_mb, 0, sizeof(s_ui_mb));
+    portEXIT_CRITICAL(&s_ui_mux);
+    _idle_skip_div = 0;
 
+    load_ui_prefs();
+    _cached_bat_pct = bsp_battery_get_percent();
+    if (_cached_bat_pct < 0 || _cached_bat_pct > 100) _cached_bat_pct = 100;
+    _cached_charging = bsp_battery_is_charging();
+    _last_bat_check_us = esp_timer_get_time();
+
+    if (!s_monolith_buf) {
+        s_monolith_buf = (uint16_t*)heap_caps_calloc(TARS_MONO_W * TARS_MONO_H, sizeof(uint16_t),
+                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s_monolith_buf) {
+            s_monolith_dsc.data = (const uint8_t*)s_monolith_buf;
+            ESP_LOGI(TAG, "Allocated 1-bit TARS Monolith PSRAM canvas (%u KB)",
+                     (unsigned)((TARS_MONO_W * TARS_MONO_H * 2) / 1024));
+        }
+    }
+
+    display_manager_set_timeout(120000);
+    update_wake_pill_ui(nullptr, nullptr, 0, false, true);
+
+    // Pure Pitch-Black AMOLED root background
     _bg_obj = lv_obj_create(lv_scr_act());
     lv_obj_set_size(_bg_obj, LV_PCT(100), LV_PCT(100));
-    lv_obj_set_style_bg_color(_bg_obj, lv_color_hex(0x080A0F), 0);
+    lv_obj_set_style_bg_color(_bg_obj, lv_color_hex(0x000000), 0);
     lv_obj_set_style_border_width(_bg_obj, 0, 0);
     lv_obj_set_style_radius(_bg_obj, 0, 0);
     lv_obj_set_style_pad_all(_bg_obj, 0, 0);
     lv_obj_clear_flag(_bg_obj, LV_OBJ_FLAG_SCROLLABLE);
 
-    // 1. Top Header with Back Button (<) + TARS 3X Title
+    // 1. Top Header: Back (<) | TARS + Style/Humor/Bat | Tone Switcher Pill
     _btn_back = lv_obj_create(_bg_obj);
     lv_obj_add_flag(_btn_back, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(_btn_back, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_all(_btn_back, 0, 0);
-    lv_obj_set_size(_btn_back, 42, 42);
-    lv_obj_align(_btn_back, LV_ALIGN_TOP_LEFT, 16, 14);
-    lv_obj_set_style_radius(_btn_back, 21, 0);
-    lv_obj_set_style_bg_color(_btn_back, lv_color_hex(0x1A202C), 0);
+    lv_obj_set_size(_btn_back, 40, 40);
+    lv_obj_align(_btn_back, LV_ALIGN_TOP_LEFT, 18, 12);
+    lv_obj_set_style_radius(_btn_back, 10, 0);
+    lv_obj_set_style_bg_color(_btn_back, lv_color_hex(0x11141B), 0);
     lv_obj_set_style_border_color(_btn_back, lv_color_hex(0x334155), 0);
     lv_obj_set_style_border_width(_btn_back, 1, 0);
     lv_obj_set_style_shadow_width(_btn_back, 0, 0);
@@ -1911,51 +2694,77 @@ bool AppTars::run() {
     lv_label_set_text(lbl_back, LV_SYMBOL_LEFT);
     lv_obj_center(lbl_back);
 
-    lv_obj_t* title = lv_label_create(_bg_obj);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_22, 0);
-    lv_obj_set_style_text_color(title, lv_color_hex(0xFFA000), 0);
-    lv_label_set_text(title, "TARS // 3X TURBO");
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 14, 14);
+    _title_label = lv_label_create(_bg_obj);
+    lv_obj_set_style_text_font(_title_label, &lv_font_montserrat_20, 0);
+    lv_label_set_text(_title_label, "TARS");
+    lv_obj_align(_title_label, LV_ALIGN_TOP_LEFT, 68, 12);
 
     _params_label = lv_label_create(_bg_obj);
     lv_obj_set_style_text_font(_params_label, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(_params_label, lv_color_hex(0x8892B0), 0);
-    lv_label_set_text_fmt(_params_label, "MIZAH: %%%d  |  DURUSTLUK: %%%d", _humor_pct, _honesty_pct);
-    lv_obj_align(_params_label, LV_ALIGN_TOP_MID, 14, 42);
+    lv_label_set_text_fmt(_params_label, "%s | MIZAH %%%d | PIL %%%d",
+                          kTarsStyleNames[_monolith_style], _humor_pct, _cached_bat_pct);
+    lv_obj_align(_params_label, LV_ALIGN_TOP_LEFT, 68, 36);
 
-    // 2. Live Status & VAD Level Bar
+    // Top-right Tone Switcher Button (Titanyum Beyaz -> Buz Celik -> Amber -> Yesil)
+    _btn_tone = lv_obj_create(_bg_obj);
+    lv_obj_add_flag(_btn_tone, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(_btn_tone, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(_btn_tone, 0, 0);
+    lv_obj_set_size(_btn_tone, 84, 34);
+    lv_obj_align(_btn_tone, LV_ALIGN_TOP_RIGHT, -18, 15);
+    lv_obj_set_style_radius(_btn_tone, 8, 0);
+    lv_obj_set_style_bg_color(_btn_tone, lv_color_hex(0x0D1017), 0);
+    lv_obj_set_style_border_width(_btn_tone, 2, 0);
+    lv_obj_set_style_shadow_width(_btn_tone, 0, 0);
+    lv_obj_add_event_cb(_btn_tone, [](lv_event_t* e) {
+        AppTars* self = (AppTars*)lv_event_get_user_data(e);
+        if (self) self->cycle_tone();
+    }, LV_EVENT_CLICKED, this);
+
+    _btn_tone_label = lv_label_create(_btn_tone);
+    lv_obj_set_style_text_font(_btn_tone_label, &lv_font_montserrat_12, 0);
+    lv_label_set_text(_btn_tone_label, kTarsPalettes[_monolith_tone].name);
+    lv_obj_center(_btn_tone_label);
+
+    // 2. Live 1-Bit Pixel TARS Monolith Viewport (352x192, clickable -> cycles Saf / NASA / Asimetrik!)
+    if (s_monolith_buf) {
+        _monolith_img = lv_image_create(_bg_obj);
+        lv_image_set_src(_monolith_img, &s_monolith_dsc);
+        lv_obj_set_size(_monolith_img, TARS_MONO_W + 4, TARS_MONO_H + 4);
+        lv_obj_align(_monolith_img, LV_ALIGN_TOP_MID, 0, 58);
+        lv_obj_set_style_bg_color(_monolith_img, lv_color_hex(0x000000), 0);
+        lv_obj_set_style_bg_opa(_monolith_img, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(_monolith_img, 2, 0);
+        lv_obj_set_style_radius(_monolith_img, 6, 0);
+        lv_obj_set_style_pad_all(_monolith_img, 0, 0);
+        lv_obj_add_flag(_monolith_img, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(_monolith_img, [](lv_event_t* e) {
+            AppTars* self = (AppTars*)lv_event_get_user_data(e);
+            if (self) self->cycle_style();
+        }, LV_EVENT_CLICKED, this);
+    }
+
+    // 3. Compact Status & Action Readout Strip
     _status_label = lv_label_create(_bg_obj);
     lv_obj_set_style_text_font(_status_label, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(_status_label, lv_color_hex(0x00E676), 0);
-    lv_label_set_text(_status_label, "ELLER SERBEST DINLIYOR...");
-    lv_obj_align(_status_label, LV_ALIGN_TOP_MID, 0, 68);
+    lv_label_set_text(_status_label, "HAZIR - ELLER SERBEST");
+    lv_obj_align(_status_label, LV_ALIGN_TOP_MID, 0, 258);
 
-    _level_bar = lv_bar_create(_bg_obj);
-    lv_obj_set_size(_level_bar, 340, 10);
-    lv_obj_align(_level_bar, LV_ALIGN_TOP_MID, 0, 92);
-    lv_bar_set_range(_level_bar, 0, 100);
-    lv_bar_set_value(_level_bar, 8, LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(_level_bar, lv_color_hex(0x1C222D), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(_level_bar, lv_color_hex(0x00E5FF), LV_PART_INDICATOR);
-    lv_obj_set_style_radius(_level_bar, 5, 0);
-
-    // 3. Action Status Badge
     _action_badge = lv_label_create(_bg_obj);
     lv_obj_set_style_text_font(_action_badge, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(_action_badge, lv_color_hex(0xFFA000), 0);
-    lv_label_set_text(_action_badge, "EYLEM: HAZIR (SICAK TLS + SSE AKIS)");
-    lv_obj_align(_action_badge, LV_ALIGN_TOP_MID, 0, 110);
+    lv_label_set_text(_action_badge, "DOKUN: STIL DEGISTIR | UST: TON");
+    lv_obj_align(_action_badge, LV_ALIGN_TOP_MID, 0, 277);
 
-    // 4. Scrollable Flex Dialogue Card
+    // 4. 1-Bit Terminal Dialogue Card (cleanly framed below Monolith, scrollable)
     _dialog_card = lv_obj_create(_bg_obj);
-    lv_obj_set_size(_dialog_card, 372, 272);
-    lv_obj_align(_dialog_card, LV_ALIGN_TOP_MID, 0, 134);
-    lv_obj_set_style_bg_color(_dialog_card, lv_color_hex(0x12161F), 0);
-    lv_obj_set_style_border_color(_dialog_card, lv_color_hex(0x2A3242), 0);
-    lv_obj_set_style_border_width(_dialog_card, 1, 0);
-    lv_obj_set_style_radius(_dialog_card, 16, 0);
-    lv_obj_set_style_pad_all(_dialog_card, 14, 0);
-    lv_obj_set_style_pad_row(_dialog_card, 12, 0);
+    lv_obj_set_size(_dialog_card, 374, 134);
+    lv_obj_align(_dialog_card, LV_ALIGN_TOP_MID, 0, 297);
+    lv_obj_set_style_bg_color(_dialog_card, lv_color_hex(0x05070B), 0);
+    lv_obj_set_style_border_width(_dialog_card, 2, 0);
+    lv_obj_set_style_radius(_dialog_card, 8, 0);
+    lv_obj_set_style_pad_all(_dialog_card, 11, 0);
+    lv_obj_set_style_pad_row(_dialog_card, 8, 0);
     lv_obj_set_flex_flow(_dialog_card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(_dialog_card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_scrollbar_mode(_dialog_card, LV_SCROLLBAR_MODE_AUTO);
@@ -1965,21 +2774,23 @@ bool AppTars::run() {
     lv_label_set_long_mode(_user_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_font(_user_label, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(_user_label, lv_color_hex(0x94A3B8), 0);
-    lv_label_set_text(_user_label, "SEN: \"TARS, bugun cok yoruldum salonun isigini acar misin?\"");
+    lv_label_set_text(_user_label, "> TARS hazir. Dokun veya konus...");
 
     _tars_label = lv_label_create(_dialog_card);
     lv_obj_set_width(_tars_label, LV_PCT(100));
     lv_label_set_long_mode(_tars_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_font(_tars_label, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(_tars_label, lv_color_hex(0xFFFFFF), 0);
-    lv_label_set_text(_tars_label, "TARS: \"3X Turbo motor aktif Eymen. Konus, aninda cevap ve eylem hazir.\"");
+    lv_obj_set_style_text_color(_tars_label, lv_color_hex(0xF8FAFC), 0);
+    lv_label_set_text(_tars_label, "TARS: \"Mizah %75. Seni dinliyorum Eymen.\"");
 
-    // 5. Bottom Control Row
+    // 5. Bottom Control Row: [Konus (174)] [TURBO (96)] [M:%75 (88)]
     _btn_test = lv_btn_create(_bg_obj);
-    lv_obj_set_size(_btn_test, 206, 52);
-    lv_obj_align(_btn_test, LV_ALIGN_BOTTOM_LEFT, 18, -18);
-    lv_obj_set_style_radius(_btn_test, 14, 0);
-    lv_obj_set_style_bg_color(_btn_test, lv_color_hex(0x1E88E5), 0);
+    lv_obj_set_size(_btn_test, 174, 46);
+    lv_obj_align(_btn_test, LV_ALIGN_BOTTOM_LEFT, 18, -16);
+    lv_obj_set_style_radius(_btn_test, 10, 0);
+    lv_obj_set_style_bg_color(_btn_test, lv_color_hex(0x1E40AF), 0);
+    lv_obj_set_style_border_color(_btn_test, lv_color_hex(0x3B82F6), 0);
+    lv_obj_set_style_border_width(_btn_test, 1, 0);
     lv_obj_set_style_shadow_width(_btn_test, 0, 0);
     lv_obj_add_event_cb(_btn_test, [](lv_event_t* e) {
         s_tars_manual_toggle = true;
@@ -1988,28 +2799,56 @@ bool AppTars::run() {
 
     _btn_test_label = lv_label_create(_btn_test);
     lv_obj_set_style_text_font(_btn_test_label, &lv_font_montserrat_14, 0);
-    lv_label_set_text(_btn_test_label, LV_SYMBOL_AUDIO " Konusmayi Baslat");
+    lv_label_set_text(_btn_test_label, LV_SYMBOL_AUDIO " Konus");
     lv_obj_center(_btn_test_label);
 
+    _btn_turbo = lv_btn_create(_bg_obj);
+    lv_obj_set_size(_btn_turbo, 96, 46);
+    lv_obj_align(_btn_turbo, LV_ALIGN_BOTTOM_LEFT, 200, -16);
+    lv_obj_set_style_radius(_btn_turbo, 10, 0);
+    lv_obj_set_style_border_width(_btn_turbo, 1, 0);
+    lv_obj_set_style_shadow_width(_btn_turbo, 0, 0);
+    lv_obj_add_event_cb(_btn_turbo, [](lv_event_t* e) {
+        AppTars* self = (AppTars*)lv_event_get_user_data(e);
+        if (self) {
+            self->set_turbo_mode(!self->is_turbo_mode());
+            self->apply_theme_chrome();
+            self->render_monolith_frame();
+            bsp_vibrate_pulse(45);
+        }
+    }, LV_EVENT_CLICKED, this);
+
+    _btn_turbo_label = lv_label_create(_btn_turbo);
+    lv_obj_set_style_text_font(_btn_turbo_label, &lv_font_montserrat_14, 0);
+    lv_label_set_text(_btn_turbo_label, "TURBO");
+    lv_obj_center(_btn_turbo_label);
+
     _btn_humor = lv_btn_create(_bg_obj);
-    lv_obj_set_size(_btn_humor, 152, 52);
-    lv_obj_align(_btn_humor, LV_ALIGN_BOTTOM_RIGHT, -18, -18);
-    lv_obj_set_style_radius(_btn_humor, 14, 0);
-    lv_obj_set_style_bg_color(_btn_humor, lv_color_hex(0x283040), 0);
+    lv_obj_set_size(_btn_humor, 88, 46);
+    lv_obj_align(_btn_humor, LV_ALIGN_BOTTOM_LEFT, 304, -16);
+    lv_obj_set_style_radius(_btn_humor, 10, 0);
+    lv_obj_set_style_bg_color(_btn_humor, lv_color_hex(0x1C222D), 0);
+    lv_obj_set_style_border_color(_btn_humor, lv_color_hex(0x334155), 0);
+    lv_obj_set_style_border_width(_btn_humor, 1, 0);
     lv_obj_set_style_shadow_width(_btn_humor, 0, 0);
     lv_obj_add_event_cb(_btn_humor, [](lv_event_t* e) {
         AppTars* self = (AppTars*)lv_event_get_user_data(e);
         if (self) {
             int next = (self->get_humor() == 75) ? 100 : (self->get_humor() == 100) ? 40 : 75;
             self->set_humor(next);
-            bsp_vibrate_pulse(40);
+            bsp_vibrate_pulse(35);
         }
     }, LV_EVENT_CLICKED, this);
 
-    lv_obj_t* l_hum = lv_label_create(_btn_humor);
-    lv_obj_set_style_text_font(l_hum, &lv_font_montserrat_14, 0);
-    lv_label_set_text(l_hum, "Mizah Ayari");
-    lv_obj_center(l_hum);
+    _btn_humor_label = lv_label_create(_btn_humor);
+    lv_obj_set_style_text_font(_btn_humor_label, &lv_font_montserrat_14, 0);
+    lv_label_set_text_fmt(_btn_humor_label, "M:%%%d", _humor_pct);
+    lv_obj_center(_btn_humor_label);
+
+    apply_theme_chrome();
+    _idle_skip_div = 0;
+    render_monolith_frame();
+    _anim_timer = lv_timer_create(on_tars_anim_timer, 80, this); // Smart 12.5 FPS active / ~4 FPS idle
 
     s_tars_app_active = true;
     ensure_tars_worker();
@@ -2026,18 +2865,29 @@ bool AppTars::close() {
     s_tars_abort_audio = true;
     display_manager_set_timeout(5000);
 
+    if (_anim_timer) {
+        lv_timer_delete(_anim_timer);
+        _anim_timer = nullptr;
+    }
+
     if (_bg_obj) {
         lv_obj_delete_async(_bg_obj);
         _bg_obj = nullptr;
         _btn_back = nullptr;
+        _title_label = nullptr;
         _params_label = nullptr;
+        _btn_tone = nullptr;
+        _btn_tone_label = nullptr;
+        _monolith_img = nullptr;
         _status_label = nullptr;
-        _level_bar = nullptr;
         _dialog_card = nullptr;
         _user_label = nullptr;
         _tars_label = nullptr;
         _action_badge = nullptr;
+        _btn_turbo = nullptr;
+        _btn_turbo_label = nullptr;
         _btn_humor = nullptr;
+        _btn_humor_label = nullptr;
         _btn_test = nullptr;
         _btn_test_label = nullptr;
     }

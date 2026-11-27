@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <errno.h>
 #include <unistd.h>
 #include <string.h>
 #include <stdio.h>
@@ -136,16 +137,18 @@ static bool pc_discover_ip_udp(void) {
 
     int broadcast = 1;
     setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
-    struct timeval tv = { .tv_sec = 0, .tv_usec = 450000 };
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 550000 };
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    struct sockaddr_in dst = {};
-    dst.sin_family = AF_INET;
-    dst.sin_port = htons(PC_DISCOVER_PORT);
-    dst.sin_addr.s_addr = inet_addr("192.168.1.255");
-
     const char* probe = "UZ_PC_DISCOVER";
-    sendto(sock, probe, strlen(probe), 0, (struct sockaddr*)&dst, sizeof(dst));
+    const char* bcasts[2] = { "192.168.1.255", "255.255.255.255" };
+    for (int i = 0; i < 2; i++) {
+        struct sockaddr_in dst = {};
+        dst.sin_family = AF_INET;
+        dst.sin_port = htons(PC_DISCOVER_PORT);
+        dst.sin_addr.s_addr = inet_addr(bcasts[i]);
+        sendto(sock, probe, strlen(probe), 0, (struct sockaddr*)&dst, sizeof(dst));
+    }
 
     char rx[96] = {0};
     struct sockaddr_in src = {};
@@ -164,6 +167,7 @@ static bool pc_discover_ip_udp(void) {
             return true;
         }
     }
+    ESP_LOGW(TAG, "UDP discovery on port %d got no reply (n=%d, errno=%d)", PC_DISCOVER_PORT, n, errno);
     return false;
 }
 
@@ -174,9 +178,9 @@ static bool pc_http_post_cmd(const char* ip, const char* cmd) {
     dst.sin_addr.s_addr = inet_addr(ip);
 
     char* req = (char*)heap_caps_malloc(640, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    char* rx = (char*)heap_caps_malloc(192, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char* rx = (char*)heap_caps_malloc(256, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!req) req = (char*)malloc(640);
-    if (!rx) rx = (char*)malloc(192);
+    if (!rx) rx = (char*)malloc(256);
     if (!req || !rx) {
         free(req);
         free(rx);
@@ -185,12 +189,13 @@ static bool pc_http_post_cmd(const char* ip, const char* cmd) {
 
     int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
     if (sock < 0) {
+        ESP_LOGW(TAG, "PC socket() failed errno=%d", errno);
         free(req);
         free(rx);
         return false;
     }
 
-    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 500000 };
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
@@ -204,12 +209,18 @@ static bool pc_http_post_cmd(const char* ip, const char* cmd) {
                                "Connection: close\r\n\r\n%s",
                                ip, PC_HTTP_PORT, (unsigned)strlen(cmd), cmd);
         if (req_len > 0 && req_len < 640 && send(sock, req, req_len, 0) > 0) {
-            memset(rx, 0, 192);
-            int r = recv(sock, rx, 191, 0);
+            memset(rx, 0, 256);
+            int r = recv(sock, rx, 255, 0);
             if (r > 0 && strstr(rx, "200") != nullptr) {
                 ok = true;
+            } else {
+                ESP_LOGW(TAG, "PC HTTP POST [%s] bad reply (r=%d, errno=%d, rx='%.60s')", cmd, r, errno, rx);
             }
+        } else {
+            ESP_LOGW(TAG, "PC HTTP POST [%s] send failed errno=%d", cmd, errno);
         }
+    } else {
+        ESP_LOGW(TAG, "PC TCP connect %s:%d failed errno=%d", ip, PC_HTTP_PORT, errno);
     }
     close(sock);
     free(req);
@@ -288,10 +299,13 @@ bool pc_control_get_stats(char* out_summary, size_t max_len) {
         ESP_LOGI(TAG, "PC Stats @ %s: %s", s_cached_pc_ip, out_summary);
         return true;
     }
-    if (pc_discover_ip_udp() && pc_http_get_stats_from_ip(s_cached_pc_ip, out_summary, max_len)) {
-        ESP_LOGI(TAG, "PC Stats @ %s (auto-discovered): %s", s_cached_pc_ip, out_summary);
+    vTaskDelay(pdMS_TO_TICKS(120));
+    pc_discover_ip_udp();
+    if (pc_http_get_stats_from_ip(s_cached_pc_ip, out_summary, max_len)) {
+        ESP_LOGI(TAG, "PC Stats @ %s (retry): %s", s_cached_pc_ip, out_summary);
         return true;
     }
+    ESP_LOGW(TAG, "PC Stats unreachable on %s:%d", s_cached_pc_ip, PC_HTTP_PORT);
     return false;
 }
 
@@ -302,31 +316,26 @@ bool pc_control_send(const char* cmd) {
         return pc_control_wake_lan();
     }
 
-    if (wifi_manager_is_connected()) {
-        wifi_manager_mark_activity();
-        if (pc_http_post_cmd(s_cached_pc_ip, cmd)) {
-            ESP_LOGI(TAG, "Direct Watch -> PC [%s] @ %s OK!", cmd, s_cached_pc_ip);
-            return true;
-        }
-        // Retry once via UDP auto-discovery in case PC DHCP IP changed
-        if (pc_discover_ip_udp() && pc_http_post_cmd(s_cached_pc_ip, cmd)) {
-            ESP_LOGI(TAG, "Direct Watch -> PC [%s] @ %s (auto-discovered) OK!", cmd, s_cached_pc_ip);
-            return true;
-        }
-        ESP_LOGW(TAG, "Direct Watch -> PC [%s] unreachable on %s:%d", cmd, s_cached_pc_ip, PC_HTTP_PORT);
+    if (!wifi_manager_is_connected()) {
+        ESP_LOGW(TAG, "PC [%s] skipped: Wi-Fi not connected", cmd);
+        return false;
     }
 
-    // Fallback via BLE to Android Companion if connected
-    if (ble_manager_is_connected()) {
-        char ble_buf[160];
-        if (strncmp(cmd, "SMART_HOME|", 11) == 0) {
-            snprintf(ble_buf, sizeof(ble_buf), "%s", cmd);
-        } else {
-            snprintf(ble_buf, sizeof(ble_buf), "SMART_HOME|%s", cmd);
-        }
-        ble_manager_send_media_command(ble_buf);
+    wifi_manager_mark_activity();
+    if (pc_http_post_cmd(s_cached_pc_ip, cmd)) {
+        ESP_LOGI(TAG, "Direct Watch -> PC [%s] @ %s OK!", cmd, s_cached_pc_ip);
         return true;
     }
+
+    // Retry once after short backoff + UDP auto-discovery (handles DHCP IP change & transient Wi-Fi coex drops)
+    vTaskDelay(pdMS_TO_TICKS(120));
+    pc_discover_ip_udp();
+    if (pc_http_post_cmd(s_cached_pc_ip, cmd)) {
+        ESP_LOGI(TAG, "Direct Watch -> PC [%s] @ %s (retry) OK!", cmd, s_cached_pc_ip);
+        return true;
+    }
+
+    ESP_LOGW(TAG, "Direct Watch -> PC [%s] UNREACHABLE on %s:%d", cmd, s_cached_pc_ip, PC_HTTP_PORT);
     return false;
 }
 

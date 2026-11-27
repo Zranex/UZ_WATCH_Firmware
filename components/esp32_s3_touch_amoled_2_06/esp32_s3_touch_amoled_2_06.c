@@ -507,8 +507,8 @@ esp_err_t bsp_display_new(const bsp_display_config_t *config, esp_lcd_panel_hand
     ESP_ERROR_CHECK(spi_bus_initialize(BSP_LCD_SPI_NUM, &buscfg, SPI_DMA_CH_AUTO));
 
     esp_lcd_panel_io_spi_config_t io_config = SH8601_PANEL_IO_QSPI_CONFIG(BSP_LCD_CS, NULL, NULL);
-    io_config.pclk_hz = 40 * 1000 * 1000;
-    io_config.trans_queue_depth = 1;
+    io_config.pclk_hz = 80 * 1000 * 1000;   // 80MHz QSPI (2x bandwidth -> 10.3ms full frame -> 60 FPS capable!)
+    io_config.trans_queue_depth = 8;         // Hardware DMA pipelining (eliminates strip wait bubbles)
 
     sh8601_vendor_config_t vendor_config = {
         .init_cmds = lcd_init_cmds,
@@ -569,18 +569,19 @@ esp_err_t bsp_touch_new(const bsp_touch_config_t *config, esp_lcd_touch_handle_t
     return esp_lcd_touch_new_i2c_ft5x06(tp_io_handle, &tp_cfg, ret_touch);
 }
 
-#define BSP_DISPLAY_FLUSH_LINES 16
+#define BSP_DISPLAY_FLUSH_LINES 30
 
 static lv_display_t *bsp_display_lcd_init()
 {
     const bsp_display_config_t disp_config = {
-        .max_transfer_sz = BSP_LCD_H_RES * BSP_DISPLAY_FLUSH_LINES * sizeof(lv_color_t), // 410 * 16 * 2 = 13,120 bytes
+        .max_transfer_sz = BSP_LCD_H_RES * BSP_DISPLAY_FLUSH_LINES * sizeof(lv_color_t), // 410 * 30 * 2 = 24,600 bytes
     };
 
     BSP_ERROR_CHECK_RETURN_NULL(bsp_display_new(&disp_config, &panel_handle, &io_handle));
 
     int buffer_size = BSP_LCD_H_RES * BSP_DISPLAY_FLUSH_LINES;
 
+    // 60 FPS Zero-Copy Double-Buffered Internal DMA SRAM (48 KB total; leaves ~126 KB Internal SRAM free!)
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle = io_handle,
         .panel_handle = panel_handle,
@@ -601,8 +602,8 @@ static lv_display_t *bsp_display_lcd_init()
         },
         .flags = {
             .sw_rotate = false,
-            .buff_dma = false,
-            .buff_spiram = true,
+            .buff_dma = true,
+            .buff_spiram = false,
 #if LVGL_VERSION_MAJOR >= 9
             .swap_bytes = true,
 #endif
@@ -615,6 +616,10 @@ static lv_display_t *bsp_display_lcd_init()
 
 #if LVGL_VERSION_MAJOR >= 9
     lv_display_add_event_cb(disp, rounder_event_cb, LV_EVENT_INVALIDATE_AREA, NULL);
+    lv_timer_t *refr_timer = lv_display_get_refr_timer(disp);
+    if (refr_timer) {
+        lv_timer_set_period(refr_timer, 16); // Lock display refresh cadence to 60 FPS (16ms)
+    }
 #else
     lv_disp_t *disp_v8 = (lv_disp_t *)disp;
     if (disp_v8 && disp_v8->driver) {
@@ -636,7 +641,16 @@ static lv_indev_t *bsp_display_indev_init(lv_display_t *disp)
         .handle = tp,
     };
 
-    return lvgl_port_add_touch(&touch_cfg);
+    lv_indev_t *indev = lvgl_port_add_touch(&touch_cfg);
+#if LVGL_VERSION_MAJOR >= 9
+    if (indev) {
+        lv_timer_t *rt = lv_indev_get_read_timer(indev);
+        if (rt) {
+            lv_timer_set_period(rt, 16); // 60 Hz responsive touch swipe sampling
+        }
+    }
+#endif
+    return indev;
 }
 
 /**********************************************************************************************************

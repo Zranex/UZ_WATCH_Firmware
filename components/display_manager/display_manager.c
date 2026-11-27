@@ -62,10 +62,10 @@ static void display_turn_off_internal(void) {
         sleep_cb();
     }
 
-    // 1 & 2. Serialize LVGL stop + QSPI panel sleep commands INSIDE lvgl_port_lock()
-    // so an in-flight QSPI DMA flush (trans_queue_depth=1) can NEVER collide with sleep commands!
+    // 1 & 2. Serialize LVGL stop + drain queued QSPI DMA + panel sleep commands INSIDE lvgl_port_lock()
     if (lvgl_port_lock(1500)) {
         lvgl_port_stop();
+        vTaskDelay(pdMS_TO_TICKS(20)); // Drain any in-flight pipelined QSPI DMA transactions safely
         bsp_display_brightness_set(0);
         bsp_display_sleep();
         lvgl_port_unlock();

@@ -1032,7 +1032,7 @@ static void update_wake_pill_ui(const char* header_text, const char* body_text, 
 
     wake_render_robot_frame();
     if (!s_wake_anim_timer) {
-        s_wake_anim_timer = lv_timer_create(on_wake_anim_timer, 90, nullptr); // ~11 FPS crisp wake robot EQ
+        s_wake_anim_timer = lv_timer_create(on_wake_anim_timer, 33, nullptr); // Smooth 30 FPS 1-bit wake EQ + 60 FPS diagonal glide
     }
     bsp_display_unlock();
 }
@@ -2391,10 +2391,9 @@ void AppTars::render_monolith_frame() {
         apply_theme_chrome();
     }
 
-    // Smart Adaptive FPS: 12.5 FPS (80ms) when active/Turbo; ~4 FPS (240ms) during quiet Idle/LowBat
-    // Slashes continuous PSRAM/QSPI DMA load by 75% so Wi-Fi, BLE, and Touch stay ultra-snappy!
+    // Smart Adaptive FPS: 20 FPS (50ms) when active/Turbo; ~5 FPS (200ms) during quiet Idle/LowBat
     if (vis == TARS_VIS_IDLE && !turbo) {
-        if ((_idle_skip_div++ % 3) != 0) {
+        if ((_idle_skip_div++ % 4) != 0) {
             return;
         }
     } else {
@@ -2848,7 +2847,7 @@ bool AppTars::run() {
     apply_theme_chrome();
     _idle_skip_div = 0;
     render_monolith_frame();
-    _anim_timer = lv_timer_create(on_tars_anim_timer, 80, this); // Smart 12.5 FPS active / ~4 FPS idle
+    _anim_timer = lv_timer_create(on_tars_anim_timer, 50, this); // 20 FPS active / ~5 FPS idle on 80MHz DMA pipeline
 
     s_tars_app_active = true;
     ensure_tars_worker();

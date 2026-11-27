@@ -70,11 +70,11 @@ static Phone* g_phone = nullptr;
 
 #define LVGL_PORT_INIT_CONFIG() \
     {                               \
-        .task_priority = 4,       \
+        .task_priority = 5,       \
         .task_stack = 20 * 1024,       \
         .task_affinity = 1,      \
         .task_max_sleep_ms = 500, \
-        .timer_period_ms = 16,     \
+        .timer_period_ms = 4,     \
     }
 
 static bool s_wrist_wake_enabled = true;

@@ -159,8 +159,22 @@ extern "C" void app_main(void)
 
     /* 3. Ekstra donanim (RTC vb.) — ekrandan SONRA */
     bsp_extra_init();
-    pedometer_task_init();
     rtc_start();
+
+    struct tm boot_tm;
+    rtc_get_time(&boot_tm);
+    if (boot_tm.tm_year < 120) {
+        boot_tm.tm_year = 126; // 2026
+        boot_tm.tm_mon = 8;    // September
+        boot_tm.tm_mday = 13;
+        boot_tm.tm_hour = 18;
+        boot_tm.tm_min = 35;
+        boot_tm.tm_sec = 0;
+        rtc_set_time(&boot_tm);
+    }
+
+    // Start pedometer AFTER RTC + NVS are ready so today's persistent step count restores accurately!
+    pedometer_task_init();
     
     /* Initialize SD Card */
     esp_err_t sd_err = bsp_sdcard_mount();
@@ -195,18 +209,6 @@ extern "C" void app_main(void)
         }
     } else {
         ESP_UTILS_LOGE("Failed to initialize audio I2S: %d", audio_err);
-    }
-
-    struct tm timeinfo;
-    rtc_get_time(&timeinfo);
-    if (timeinfo.tm_year < 120) {
-        timeinfo.tm_year = 126; // 2026
-        timeinfo.tm_mon = 8;    // September
-        timeinfo.tm_mday = 13;
-        timeinfo.tm_hour = 18;
-        timeinfo.tm_min = 35;
-        timeinfo.tm_sec = 0;
-        rtc_set_time(&timeinfo);
     }
 
     /* 4. LVGL kilit */
@@ -350,28 +352,40 @@ extern "C" void app_main(void)
             }
         }
 
-        // Periyodik guncelleme (Saat her saniye, Wi-Fi 2s, Pil 5s)
+        // Periyodik guncelleme (Diff korumali: degismeyen saat/Wi-Fi/pil LVGL'i gereksiz cizdirmez)
         lv_timer_create([](lv_timer_t* t) {
             Phone* phone = (Phone*)t->user_data;
+            static int s_last_h = -1, s_last_m = -1, s_last_ws = -1, s_last_bat = -1;
+            static bool s_last_chg = false;
+
             time_t now;
             struct tm timeinfo;
             time(&now);
             localtime_r(&now, &timeinfo);
-            phone->getDisplay().getStatusBar()->setClock(timeinfo.tm_hour, timeinfo.tm_min);
+            if (timeinfo.tm_hour != s_last_h || timeinfo.tm_min != s_last_m) {
+                s_last_h = timeinfo.tm_hour;
+                s_last_m = timeinfo.tm_min;
+                phone->getDisplay().getStatusBar()->setClock(timeinfo.tm_hour, timeinfo.tm_min);
+            }
             
-            // Wi-Fi durumu (her saniye kontrol edilir - aninda tepki)
+            // Wi-Fi durumu (sadece durum degistiginde ikon guncellenir)
             StatusBar::WifiState ws = StatusBar::WifiState::DISCONNECTED;
             if (wifi_manager_is_connected()) ws = StatusBar::WifiState::SIGNAL_3;
             else if (wifi_manager_is_active() && wifi_manager_get_state() != WIFI_STATE_FAILED) ws = StatusBar::WifiState::SIGNAL_1;
-            phone->getDisplay().getStatusBar()->setWifiIconState(ws);
+            if ((int)ws != s_last_ws) {
+                s_last_ws = (int)ws;
+                phone->getDisplay().getStatusBar()->setWifiIconState(ws);
+            }
 
-            // Pil durumu (her 5 saniyede bir)
+            // Pil durumu (her 5 saniyede bir, sadece yuzde/sarj degistiginde)
             static int bat_tick = 0;
             if (++bat_tick >= 5) {
                 bat_tick = 0;
                 int percent = bsp_battery_get_percent();
                 bool charging = bsp_battery_is_charging();
-                if (percent >= 0 && percent <= 100) {
+                if (percent >= 0 && percent <= 100 && (percent != s_last_bat || charging != s_last_chg)) {
+                    s_last_bat = percent;
+                    s_last_chg = charging;
                     phone->getDisplay().getStatusBar()->setBatteryPercent(charging, percent);
                 }
             }

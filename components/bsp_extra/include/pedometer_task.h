@@ -9,7 +9,7 @@ extern "C" {
 #endif
 
 /**
- * @brief Initialize and start the pedometer task
+ * @brief Initialize and start the pedometer task (restores today's steps from NVS)
  * @return ESP_OK on success
  */
 esp_err_t pedometer_task_init(void);
@@ -21,9 +21,14 @@ esp_err_t pedometer_task_init(void);
 uint32_t pedometer_get_steps(void);
 
 /**
- * @brief Reset the step count to zero
+ * @brief Reset the step count to zero (and persist immediately)
  */
 void pedometer_reset_steps(void);
+
+/**
+ * @brief Flush current step count to NVS immediately if changed
+ */
+void pedometer_save_now(void);
 
 #include "qmi8658.h"
 
@@ -33,7 +38,7 @@ void pedometer_reset_steps(void);
 esp_err_t pedometer_get_latest_acc(qmi8658_acc_t *acc);
 
 /**
- * @brief Set pedometer sampling rate to low-power mode (100ms instead of 50ms)
+ * @brief Set pedometer sampling rate to low-power mode (150ms/400ms instead of 100ms)
  */
 void pedometer_set_low_power(bool enable);
 

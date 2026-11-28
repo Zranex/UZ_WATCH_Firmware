@@ -300,7 +300,7 @@ esp_err_t wifi_manager_start(void)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     cfg.nvs_enable = 0;
     cfg.static_rx_buf_num = 6;
-    cfg.dynamic_rx_buf_num = 12;
+    cfg.dynamic_rx_buf_num = 24;
     cfg.static_tx_buf_num = 8;
 
     err = esp_wifi_init(&cfg);

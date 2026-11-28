@@ -132,6 +132,11 @@ void AppLockscreen::anim_deleted_cb(lv_anim_t * a) {
     }
 }
 
+static int s_last_hour = -1;
+static int s_last_min  = -1;
+static int s_last_sec  = -1;
+static int s_last_mday = -1;
+
 void AppLockscreen::timer_cb(lv_timer_t * t) {
     if (!lock_scr || !label_hour || !label_minute || !label_second || !label_date) return;
 
@@ -139,17 +144,27 @@ void AppLockscreen::timer_cb(lv_timer_t * t) {
     if (rtc_get_time(&timeinfo) == ESP_OK) {
         char buf[32];
 
-        snprintf(buf, sizeof(buf), "%02d", timeinfo.tm_hour);
-        lv_label_set_text(label_hour, buf);
-
-        snprintf(buf, sizeof(buf), "%02d", timeinfo.tm_min);
-        lv_label_set_text(label_minute, buf);
-
-        snprintf(buf, sizeof(buf), "%02d", timeinfo.tm_sec);
-        lv_label_set_text(label_second, buf);
-
-        snprintf(buf, sizeof(buf), "%02d/%02d/%d", timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
-        lv_label_set_text(label_date, buf);
+        // Diff-guarded updates: never re-decompress 160px Cinzel hour/min glyphs when only seconds tick!
+        if (timeinfo.tm_hour != s_last_hour) {
+            s_last_hour = timeinfo.tm_hour;
+            snprintf(buf, sizeof(buf), "%02d", timeinfo.tm_hour);
+            lv_label_set_text(label_hour, buf);
+        }
+        if (timeinfo.tm_min != s_last_min) {
+            s_last_min = timeinfo.tm_min;
+            snprintf(buf, sizeof(buf), "%02d", timeinfo.tm_min);
+            lv_label_set_text(label_minute, buf);
+        }
+        if (timeinfo.tm_sec != s_last_sec) {
+            s_last_sec = timeinfo.tm_sec;
+            snprintf(buf, sizeof(buf), "%02d", timeinfo.tm_sec);
+            lv_label_set_text(label_second, buf);
+        }
+        if (timeinfo.tm_mday != s_last_mday) {
+            s_last_mday = timeinfo.tm_mday;
+            snprintf(buf, sizeof(buf), "%02d/%02d/%d", timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
+            lv_label_set_text(label_date, buf);
+        }
     }
 }
 
@@ -242,6 +257,10 @@ void AppLockscreen::show(esp_brookesia::systems::phone::Phone* phone) {
     lv_label_set_text(label_date, "01/01/2026");
     lv_obj_align_to(label_date, label_minute, LV_ALIGN_OUT_BOTTOM_MID, 0, 15);
 
+    s_last_hour = -1;
+    s_last_min  = -1;
+    s_last_sec  = -1;
+    s_last_mday = -1;
     timer_clock = lv_timer_create(timer_cb, 1000, nullptr);
     timer_cb(timer_clock);
 

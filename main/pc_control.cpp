@@ -42,10 +42,11 @@ const char* pc_control_get_cached_ip(void) {
 bool pc_control_esphome(const char* path) {
     if (!path) return false;
     if (!wifi_manager_is_connected()) {
-        if (ble_manager_is_connected()) {
+        if (ble_manager_is_connected() && strstr(path, "toggle")) {
             ble_manager_send_media_command("SMART_HOME|LIGHT_1_TOGGLE");
             return true;
         }
+        ESP_LOGW(TAG, "ESPHome %s skipped: Wi-Fi not connected", path);
         return false;
     }
 
@@ -55,32 +56,38 @@ bool pc_control_esphome(const char* path) {
     dest_addr.sin_family = AF_INET;
     dest_addr.sin_port = htons(80);
 
-    int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
-    if (sock < 0) return false;
-
-    struct timeval tv = { .tv_sec = 1, .tv_usec = 200000 };
-    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
     bool ok = false;
-    if (connect(sock, (struct sockaddr*)&dest_addr, sizeof(dest_addr)) == 0) {
-        char req[192];
-        snprintf(req, sizeof(req),
-                 "POST %s HTTP/1.1\r\nHost: %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                 path, ESPHOME_SALON_IP);
-        if (send(sock, req, strlen(req), 0) > 0) {
-            char rx[64] = {0};
-            recv(sock, rx, sizeof(rx) - 1, 0);
-            ok = true;
-            ESP_LOGI(TAG, "ESPHome %s -> OK", path);
+    for (int attempt = 0; attempt < 2 && !ok; attempt++) {
+        int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+        if (sock < 0) break;
+
+        struct timeval tv = { .tv_sec = 0, .tv_usec = 850000 };
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+        if (connect(sock, (struct sockaddr*)&dest_addr, sizeof(dest_addr)) == 0) {
+            char req[192];
+            snprintf(req, sizeof(req),
+                     "POST %s HTTP/1.1\r\nHost: %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                     path, ESPHOME_SALON_IP);
+            if (send(sock, req, strlen(req), 0) > 0) {
+                char rx[96] = {0};
+                int r = recv(sock, rx, sizeof(rx) - 1, 0);
+                if (r > 0 && (strstr(rx, "200") != nullptr || strstr(rx, "HTTP/1.") != nullptr)) {
+                    ok = true;
+                    ESP_LOGI(TAG, "ESPHome %s -> OK (attempt %d)", path, attempt + 1);
+                } else {
+                    ESP_LOGW(TAG, "ESPHome %s bad reply (attempt %d, r=%d, errno=%d)", path, attempt + 1, r, errno);
+                }
+            }
+        } else {
+            ESP_LOGW(TAG, "ESPHome %s connect failed (attempt %d, errno=%d)", path, attempt + 1, errno);
         }
-    } else {
-        ESP_LOGW(TAG, "ESPHome %s connect failed -> BLE fallback", path);
-        if (ble_manager_is_connected()) {
-            ble_manager_send_media_command("SMART_HOME|LIGHT_1_TOGGLE");
+        close(sock);
+        if (!ok && attempt == 0) {
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
-    close(sock);
     return ok;
 }
 

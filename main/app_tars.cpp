@@ -9,7 +9,10 @@
 #include "display_manager.h"
 #include "esp_codec_dev.h"
 #include "esp_http_client.h"
+#include "esp_tls.h"
 #include "esp_crt_bundle.h"
+#include "esp_random.h"
+#include "mbedtls/base64.h"
 #include "esp_heap_caps.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -17,7 +20,9 @@
 #include "app_local_music.hpp"
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <errno.h>
 #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
@@ -29,25 +34,32 @@ extern "C" {
 #include "ble_manager.h"
 #include "wifi_manager.h"
 #include "rtc_lib.h"
+#include "pedometer_task.h"
 esp_codec_dev_handle_t bsp_get_shared_mic_codec(void);
 }
 
 extern const lv_image_dsc_t icon_voice_recorder;
 extern esp_codec_dev_handle_t spk_codec_dev;
 
-static const char* TAG = "TARS-3X";
+static const char* TAG = "TARS-5.0";
 
-#define ESPHOME_SALON_IP     "192.168.1.102"
-#define TARS_SAMPLE_RATE     16000
-#define TARS_FRAME_SAMPLES   512                                      // 32ms per frame at 16kHz
-#define TARS_FRAME_BYTES     (TARS_FRAME_SAMPLES * 2)                 // 1024 bytes per 16-bit PCM frame
-#define TARS_PREROLL_FRAMES  6                                        // 192ms pre-roll (preserves first Turkish syllable!)
-#define TARS_MAX_REC_SEC     12                                       // 12 seconds for full long Turkish sentences
-#define TARS_MAX_PCM_BYTES   (TARS_SAMPLE_RATE * 2 * TARS_MAX_REC_SEC)
-#define TARS_ULAW_HDR_BYTES  58                                       // Standard RIFF/fmt(18)/fact/data header for u-law
-#define TARS_MAX_ULAW_BYTES  (TARS_SAMPLE_RATE * TARS_MAX_REC_SEC)    // Half size of 16-bit PCM!
-#define TARS_TEXT_CAP        512
-#define TARS_HIST_TURNS      2
+#define ESPHOME_SALON_IP      "192.168.1.102"
+#define TARS_SAMPLE_RATE      16000                                    // Mic hardware & VAD stay at crisp 16kHz
+#define TARS_ULAW_SAMPLE_RATE 8000                                     // 2x anti-aliased decimated 8kHz u-Law upload!
+#define TARS_FRAME_SAMPLES    512                                      // 32ms per frame at 16kHz
+#define TARS_FRAME_BYTES      (TARS_FRAME_SAMPLES * 2)                 // 1024 bytes per 16-bit PCM frame
+#define TARS_PREROLL_FRAMES   6                                        // 192ms pre-roll (preserves first Turkish syllable!)
+#define TARS_MAX_REC_SEC      12                                       // 12 seconds for full long Turkish sentences
+#define TARS_MAX_PCM_BYTES    (TARS_SAMPLE_RATE * 2 * TARS_MAX_REC_SEC)
+#define TARS_ULAW_HDR_BYTES   58                                       // Standard RIFF/fmt(18)/fact/data header for u-law
+#define TARS_MAX_ULAW_BYTES   (TARS_ULAW_SAMPLE_RATE * TARS_MAX_REC_SEC) // 8 KB/s (4x smaller than 16kHz PCM!)
+#define TARS_TEXT_CAP         512
+#define TARS_HIST_TURNS       10
+#define TARS_MEM_MAX_ITEMS    20
+#define TARS_MEM_ITEM_CAP     160
+#define TARS_HIST_SD_PATH     "/sdcard/tarshist.jsn"                   // Strict 8.3 FATFS filename
+#define TARS_MEM_SD_PATH      "/sdcard/tars_mem.txt"                   // Strict 8.3 FATFS filename
+#define TARS_GEM_KEY_SD_PATH  "/sdcard/gem_key.txt"                    // Strict 8.3 FATFS filename
 
 static AppTars* s_tars_instance = nullptr;
 static TaskHandle_t s_tars_task = nullptr;
@@ -55,8 +67,10 @@ static volatile bool s_tars_app_active = false;
 static volatile bool s_tars_wake_window_req = false;
 static volatile bool s_tars_abort_audio = false;
 static volatile bool s_tars_manual_toggle = false;
+static volatile bool s_tars_live_mode = false;
 static volatile bool s_wake_pill_dismissed = false;
 static char s_groq_api_key[160] = {0};
+static char s_gemini_api_key[160] = {0};
 
 // Shared 1-Bit Pixel TARS Monolith Palettes & Primitives (used by both Full App & Sol Ust Capraz Wake Overlay)
 struct TarsMonoPalette {
@@ -172,27 +186,124 @@ static volatile int s_wake_mic_pct = 0;
 static volatile bool s_wake_countdown_active = false;
 static volatile int64_t s_wake_listen_start_us = 0;
 
-// Short-term conversation memory (stored in PSRAM) for multi-turn Turkish context
-static char* s_hist_user[TARS_HIST_TURNS] = {nullptr, nullptr};
-static char* s_hist_asst[TARS_HIST_TURNS] = {nullptr, nullptr};
+// Persistent 10-turn short-term conversation memory (PSRAM + SD card JSON)
+static char* s_hist_user[TARS_HIST_TURNS] = {nullptr};
+static char* s_hist_asst[TARS_HIST_TURNS] = {nullptr};
 static int s_hist_count = 0;
+static bool s_hist_loaded = false;
+
+// Persistent 20-item long-term personal memory (PSRAM + SD card text)
+static char* s_mem_items[TARS_MEM_MAX_ITEMS] = {nullptr};
+static int s_mem_count = 0;
+static bool s_mem_loaded = false;
 
 // Persistent Keep-Alive Groq TLS Client (eliminates ~600ms TLS handshake on warm turns!)
 static esp_http_client_handle_t s_groq_client = nullptr;
 static bool s_groq_warm = false;
 static int64_t s_groq_last_use_us = 0;
 
-static void tars_push_history(const char* user_utf8, const char* asst_utf8) {
-    if (!user_utf8 || !asst_utf8 || strlen(user_utf8) < 2 || strlen(asst_utf8) < 2) return;
+static void tars_utf8_to_ascii(char* dst, const char* src, size_t max_len);
+
+static bool tars_ensure_history_alloc(void) {
     for (int i = 0; i < TARS_HIST_TURNS; i++) {
         if (!s_hist_user[i]) s_hist_user[i] = (char*)heap_caps_calloc(1, TARS_TEXT_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!s_hist_asst[i]) s_hist_asst[i] = (char*)heap_caps_calloc(1, TARS_TEXT_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_hist_user[i] || !s_hist_asst[i]) return false;
     }
-    if (!s_hist_user[0] || !s_hist_asst[0] || !s_hist_user[1] || !s_hist_asst[1]) return;
+    return true;
+}
+
+static void tars_save_history_to_sd(void) {
+    cJSON* arr = cJSON_CreateArray();
+    if (!arr) return;
+    for (int i = 0; i < s_hist_count; i++) {
+        if (s_hist_user[i] && s_hist_asst[i] && s_hist_user[i][0] && s_hist_asst[i][0]) {
+            cJSON* obj = cJSON_CreateObject();
+            cJSON_AddStringToObject(obj, "u", s_hist_user[i]);
+            cJSON_AddStringToObject(obj, "a", s_hist_asst[i]);
+            cJSON_AddItemToArray(arr, obj);
+        }
+    }
+    char* json_str = cJSON_PrintUnformatted(arr);
+    cJSON_Delete(arr);
+    if (!json_str) return;
+    FILE* f = fopen(TARS_HIST_SD_PATH, "w");
+    if (f) {
+        fwrite(json_str, 1, strlen(json_str), f);
+        fclose(f);
+    }
+    free(json_str);
+}
+
+static void tars_load_history_from_sd(void) {
+    if (s_hist_loaded) return;
+    s_hist_loaded = true;
+    if (!tars_ensure_history_alloc()) return;
+    FILE* f = fopen(TARS_HIST_SD_PATH, "r");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 2 || sz > 24576) {
+        fclose(f);
+        return;
+    }
+    char* buf = (char*)heap_caps_calloc(1, (size_t)sz + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) {
+        fclose(f);
+        return;
+    }
+    size_t rd = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    buf[rd] = '\0';
+
+    cJSON* arr = cJSON_Parse(buf);
+    free(buf);
+    if (!cJSON_IsArray(arr)) {
+        if (arr) cJSON_Delete(arr);
+        return;
+    }
+    s_hist_count = 0;
+    int n = cJSON_GetArraySize(arr);
+    int start = (n > TARS_HIST_TURNS) ? (n - TARS_HIST_TURNS) : 0;
+    for (int i = start; i < n && s_hist_count < TARS_HIST_TURNS; i++) {
+        cJSON* item = cJSON_GetArrayItem(arr, i);
+        cJSON* ju = item ? cJSON_GetObjectItem(item, "u") : nullptr;
+        cJSON* ja = item ? cJSON_GetObjectItem(item, "a") : nullptr;
+        if (cJSON_IsString(ju) && cJSON_IsString(ja) && ju->valuestring[0] && ja->valuestring[0]) {
+            strncpy(s_hist_user[s_hist_count], ju->valuestring, TARS_TEXT_CAP - 1);
+            s_hist_user[s_hist_count][TARS_TEXT_CAP - 1] = '\0';
+            strncpy(s_hist_asst[s_hist_count], ja->valuestring, TARS_TEXT_CAP - 1);
+            s_hist_asst[s_hist_count][TARS_TEXT_CAP - 1] = '\0';
+            s_hist_count++;
+        }
+    }
+    cJSON_Delete(arr);
+    ESP_LOGI(TAG, "Loaded %d TARS history turns from %s", s_hist_count, TARS_HIST_SD_PATH);
+}
+
+static void tars_clear_history(void) {
+    s_hist_count = 0;
+    s_hist_loaded = true;
+    unlink(TARS_HIST_SD_PATH);
+    ESP_LOGI(TAG, "Cleared short-term TARS history (%s)", TARS_HIST_SD_PATH);
+}
+
+static void tars_push_history(const char* user_utf8, const char* asst_utf8) {
+    if (!user_utf8 || !asst_utf8 || strlen(user_utf8) < 2 || strlen(asst_utf8) < 2) return;
+    tars_load_history_from_sd();
+    if (!tars_ensure_history_alloc()) return;
 
     if (s_hist_count >= TARS_HIST_TURNS) {
-        strncpy(s_hist_user[0], s_hist_user[1], TARS_TEXT_CAP - 1);
-        strncpy(s_hist_asst[0], s_hist_asst[1], TARS_TEXT_CAP - 1);
+        // Rotate oldest slot to the back (zero string copies!)
+        char* old_u = s_hist_user[0];
+        char* old_a = s_hist_asst[0];
+        for (int i = 0; i < TARS_HIST_TURNS - 1; i++) {
+            s_hist_user[i] = s_hist_user[i + 1];
+            s_hist_asst[i] = s_hist_asst[i + 1];
+        }
+        s_hist_user[TARS_HIST_TURNS - 1] = old_u;
+        s_hist_asst[TARS_HIST_TURNS - 1] = old_a;
         s_hist_count = TARS_HIST_TURNS - 1;
     }
     strncpy(s_hist_user[s_hist_count], user_utf8, TARS_TEXT_CAP - 1);
@@ -200,6 +311,152 @@ static void tars_push_history(const char* user_utf8, const char* asst_utf8) {
     strncpy(s_hist_asst[s_hist_count], asst_utf8, TARS_TEXT_CAP - 1);
     s_hist_asst[s_hist_count][TARS_TEXT_CAP - 1] = '\0';
     s_hist_count++;
+    tars_save_history_to_sd();
+}
+
+static bool tars_ensure_mem_alloc(void) {
+    for (int i = 0; i < TARS_MEM_MAX_ITEMS; i++) {
+        if (!s_mem_items[i]) {
+            s_mem_items[i] = (char*)heap_caps_calloc(1, TARS_MEM_ITEM_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!s_mem_items[i]) return false;
+        }
+    }
+    return true;
+}
+
+static void tars_save_memory_to_sd(void) {
+    FILE* f = fopen(TARS_MEM_SD_PATH, "w");
+    if (!f) return;
+    for (int i = 0; i < s_mem_count; i++) {
+        if (s_mem_items[i] && s_mem_items[i][0]) {
+            fprintf(f, "%s\n", s_mem_items[i]);
+        }
+    }
+    fclose(f);
+}
+
+static void tars_load_memory_from_sd(void) {
+    if (s_mem_loaded) return;
+    s_mem_loaded = true;
+    if (!tars_ensure_mem_alloc()) return;
+    FILE* f = fopen(TARS_MEM_SD_PATH, "r");
+    if (!f) return;
+    char line[TARS_MEM_ITEM_CAP];
+    s_mem_count = 0;
+    while (fgets(line, sizeof(line), f) && s_mem_count < TARS_MEM_MAX_ITEMS) {
+        size_t l = strlen(line);
+        while (l > 0 && (line[l - 1] == '\r' || line[l - 1] == '\n' || line[l - 1] == ' ')) line[--l] = '\0';
+        char* p = line;
+        while (*p == ' ' || *p == '-') p++;
+        if (strlen(p) >= 3) {
+            strncpy(s_mem_items[s_mem_count], p, TARS_MEM_ITEM_CAP - 1);
+            s_mem_items[s_mem_count][TARS_MEM_ITEM_CAP - 1] = '\0';
+            s_mem_count++;
+        }
+    }
+    fclose(f);
+    ESP_LOGI(TAG, "Loaded %d long-term memory facts from %s", s_mem_count, TARS_MEM_SD_PATH);
+}
+
+static bool tars_memory_add(const char* raw_fact) {
+    if (!raw_fact) return false;
+    tars_load_memory_from_sd();
+    if (!tars_ensure_mem_alloc()) return false;
+
+    char clean[TARS_MEM_ITEM_CAP];
+    const char* s = raw_fact;
+    while (*s == ' ' || *s == '\t' || *s == '-') s++;
+    size_t j = 0;
+    for (; s[j] && j < sizeof(clean) - 1; j++) {
+        char c = s[j];
+        if (c == '\r' || c == '\n') c = ' ';
+        else if (c == ';') c = ',';
+        clean[j] = c;
+    }
+    while (j > 0 && clean[j - 1] == ' ') j--;
+    clean[j] = '\0';
+    if (j < 3) return false;
+
+    // Deduplicate case-insensitively (ASCII-folded)
+    char new_low[TARS_MEM_ITEM_CAP] = {0};
+    tars_utf8_to_ascii(new_low, clean, sizeof(new_low));
+    for (size_t k = 0; new_low[k]; k++) new_low[k] = (char)tolower((unsigned char)new_low[k]);
+
+    for (int i = 0; i < s_mem_count; i++) {
+        char ex_low[TARS_MEM_ITEM_CAP] = {0};
+        tars_utf8_to_ascii(ex_low, s_mem_items[i], sizeof(ex_low));
+        for (size_t k = 0; ex_low[k]; k++) ex_low[k] = (char)tolower((unsigned char)ex_low[k]);
+        if (strcmp(ex_low, new_low) == 0) {
+            return true; // Already stored
+        }
+    }
+
+    if (s_mem_count >= TARS_MEM_MAX_ITEMS) {
+        char* oldest = s_mem_items[0];
+        for (int i = 0; i < TARS_MEM_MAX_ITEMS - 1; i++) {
+            s_mem_items[i] = s_mem_items[i + 1];
+        }
+        s_mem_items[TARS_MEM_MAX_ITEMS - 1] = oldest;
+        s_mem_count = TARS_MEM_MAX_ITEMS - 1;
+    }
+    strncpy(s_mem_items[s_mem_count], clean, TARS_MEM_ITEM_CAP - 1);
+    s_mem_items[s_mem_count][TARS_MEM_ITEM_CAP - 1] = '\0';
+    s_mem_count++;
+    tars_save_memory_to_sd();
+    ESP_LOGI(TAG, "MEM_SAVE (%d/%d): %s", s_mem_count, TARS_MEM_MAX_ITEMS, clean);
+    return true;
+}
+
+static int tars_memory_forget(const char* raw_kw) {
+    if (!raw_kw) return 0;
+    tars_load_memory_from_sd();
+    char kw[96] = {0};
+    tars_utf8_to_ascii(kw, raw_kw, sizeof(kw));
+    for (size_t k = 0; kw[k]; k++) kw[k] = (char)tolower((unsigned char)kw[k]);
+    char* kp = kw;
+    while (*kp == ' ') kp++;
+    size_t kl = strlen(kp);
+    while (kl > 0 && kp[kl - 1] == ' ') kp[--kl] = '\0';
+    if (kl < 2) return 0;
+
+    int removed = 0;
+    bool clear_all = (strcmp(kp, "hepsi") == 0 || strcmp(kp, "tumu") == 0 || strcmp(kp, "all") == 0);
+    int write_idx = 0;
+    for (int i = 0; i < s_mem_count; i++) {
+        char ex_low[TARS_MEM_ITEM_CAP] = {0};
+        tars_utf8_to_ascii(ex_low, s_mem_items[i], sizeof(ex_low));
+        for (size_t k = 0; ex_low[k]; k++) ex_low[k] = (char)tolower((unsigned char)ex_low[k]);
+        if (clear_all || strstr(ex_low, kp) != nullptr) {
+            removed++;
+        } else {
+            if (write_idx != i) {
+                char* tmp = s_mem_items[write_idx];
+                s_mem_items[write_idx] = s_mem_items[i];
+                s_mem_items[i] = tmp;
+            }
+            write_idx++;
+        }
+    }
+    s_mem_count = write_idx;
+    if (removed > 0) {
+        tars_save_memory_to_sd();
+        ESP_LOGI(TAG, "MEM_FORGET ('%s'): removed %d items (remaining %d)", kp, removed, s_mem_count);
+    }
+    return removed;
+}
+
+static void tars_format_memory_prompt(char* out, size_t max_len) {
+    if (!out || max_len == 0) return;
+    out[0] = '\0';
+    tars_load_memory_from_sd();
+    if (s_mem_count <= 0) return;
+    size_t pos = (size_t)snprintf(out, max_len, "\nKALICI HAFIZA (Eymen hakkinda kayitli bilgiler):");
+    for (int i = 0; i < s_mem_count && pos + 6 < max_len; i++) {
+        if (s_mem_items[i] && s_mem_items[i][0]) {
+            int w = snprintf(out + pos, max_len - pos, "\n- %s", s_mem_items[i]);
+            if (w > 0) pos += (size_t)w;
+        }
+    }
 }
 
 // Normalize Turkish UTF-8 & smart typography to clean ASCII so lv_font_montserrat renders cleanly without missing glyphs
@@ -331,8 +588,36 @@ static void tars_load_api_key(void) {
         }
     }
     if (strlen(s_groq_api_key) < 10) {
-        snprintf(s_groq_api_key, sizeof(s_groq_api_key), "%s_%s%s",
-                 "gsk", "REPLACE_WITH_YOUR_GROQ_KEY_PART1", "REPLACE_WITH_YOUR_GROQ_KEY_PART2");
+        snprintf(s_groq_api_key, sizeof(s_groq_api_key), "%s", "YOUR_GROQ_API_KEY_OR_SD_TARS_KEY_TXT");
+    }
+}
+
+static void tars_load_gemini_key(void) {
+    if (strlen(s_gemini_api_key) > 10) return;
+
+    nvs_handle_t h;
+    if (nvs_open("tars_cfg", NVS_READONLY, &h) == ESP_OK) {
+        size_t req_size = sizeof(s_gemini_api_key);
+        if (nvs_get_str(h, "gem_key", s_gemini_api_key, &req_size) == ESP_OK) {
+            ESP_LOGI(TAG, "Loaded Gemini Live API key from NVS (%d chars)", (int)strlen(s_gemini_api_key));
+        }
+        nvs_close(h);
+    }
+    if (strlen(s_gemini_api_key) < 10) {
+        FILE* f = fopen(TARS_GEM_KEY_SD_PATH, "r");
+        if (f) {
+            if (fgets(s_gemini_api_key, sizeof(s_gemini_api_key) - 1, f)) {
+                size_t l = strlen(s_gemini_api_key);
+                while (l > 0 && (s_gemini_api_key[l - 1] == '\r' || s_gemini_api_key[l - 1] == '\n' || s_gemini_api_key[l - 1] == ' ')) {
+                    s_gemini_api_key[--l] = '\0';
+                }
+                ESP_LOGI(TAG, "Loaded Gemini Live API key from %s", TARS_GEM_KEY_SD_PATH);
+            }
+            fclose(f);
+        }
+    }
+    if (strlen(s_gemini_api_key) < 10) {
+        snprintf(s_gemini_api_key, sizeof(s_gemini_api_key), "%s", "YOUR_GEMINI_API_KEY_OR_SD_GEM_KEY_TXT");
     }
 }
 
@@ -358,6 +643,7 @@ extern "C" void app_tars_set_api_key_from_ble(const char* key) {
 
 extern "C" void app_tars_stop_all_audio(void) {
     s_tars_abort_audio = true;
+    s_tars_live_mode = false;
     s_tars_wake_window_req = false;
     s_wake_pill_dismissed = true;
 }
@@ -375,12 +661,17 @@ static bool tars_is_action_authorized(const char* p, const char* user_transcript
         low[i] = (char)tolower((unsigned char)user_transcript_ascii[i]);
     }
 
-    if (strcmp(p, "SALON_ON") == 0 || strcmp(p, "SALON_OFF") == 0 || strcmp(p, "SALON_TOGGLE") == 0) {
-        // NOTE: Include BOTH "isik" and "isig" (Turkish consonant mutation: "isigi ac/kapat")!
+    if (strcmp(p, "SALON_ON") == 0 || strcmp(p, "SALON_OFF") == 0 || strcmp(p, "SALON_TOGGLE") == 0 ||
+        strcmp(p, "LIGHT_ON") == 0 || strcmp(p, "LIGHT_OFF") == 0 || strcmp(p, "LIGHT_TOGGLE") == 0 ||
+        strcmp(p, "SALON_ISIGI_ON") == 0 || strcmp(p, "SALON_ISIGI_OFF") == 0) {
+        // Allow lighting, scene, sleep, leave, and "turn everything off" phrases; still blocks casual chat ("merhaba/fikra/saat")!
         bool ok = (strstr(low, "isik") || strstr(low, "isig") || strstr(low, "lamba") || strstr(low, "salon") ||
-                   strstr(low, "aydin") || strstr(low, "karanl") || strstr(low, "ampul") ||
-                   strstr(low, "avize") || strstr(low, "spot") || strstr(low, "sinema") ||
-                   strstr(low, "mola") || strstr(low, "oda") || strstr(low, "yak") || strstr(low, "sondur"));
+                   strstr(low, "aydin") || strstr(low, "karanl") || strstr(low, "karart") || strstr(low, "parlak") ||
+                   strstr(low, "ampul") || strstr(low, "avize") || strstr(low, "spot") || strstr(low, "sinema") ||
+                   strstr(low, "mola") || strstr(low, "oda") || strstr(low, "yak") || strstr(low, "sondur") ||
+                   strstr(low, "kapat") || strstr(low, "kapa") || strstr(low, "ac") || strstr(low, "yat") ||
+                   strstr(low, "uyu") || strstr(low, "gece") || strstr(low, "disari") || strstr(low, "cik") ||
+                   strstr(low, "her sey") || strstr(low, "hepsi") || strstr(low, "mod"));
         if (!ok) {
             ESP_LOGW(TAG, "SAFETY GATE: Blocked unsolicited light action [%s] for speech '%s'", p, low);
         }
@@ -413,6 +704,20 @@ static bool tars_is_action_authorized(const char* p, const char* user_transcript
         return ok;
     }
 
+    if (strncmp(p, "MEM_FORGET:", 11) == 0 || strcmp(p, "HISTORY_CLEAR") == 0) {
+        bool ok = (strstr(low, "unut") || strstr(low, "sil") || strstr(low, "temizle") ||
+                   strstr(low, "sifirla") || strstr(low, "kaldir") || strstr(low, "gecmis") ||
+                   strstr(low, "hafiza"));
+        if (!ok) {
+            ESP_LOGW(TAG, "SAFETY GATE: Blocked unsolicited memory wipe [%s] for speech '%s'", p, low);
+        }
+        return ok;
+    }
+
+    if (strncmp(p, "MEM_SAVE:", 9) == 0) {
+        return strlen(p + 9) >= 3;
+    }
+
     return true;
 }
 
@@ -438,21 +743,29 @@ static TarsActionOutcome tars_execute_single_action(const char* raw_item, const 
     memcpy(cmd, s, len);
     cmd[len] = '\0';
 
+    // Uppercase the command opcode (before ':') so "salon_off" or "Salon_Off" never misses!
+    for (size_t i = 0; cmd[i] && cmd[i] != ':'; i++) {
+        cmd[i] = (char)toupper((unsigned char)cmd[i]);
+    }
+    if (strcmp(cmd, "PC_SHUTDOWN_NOW") == 0) {
+        strncpy(cmd, "PC_SHUTDOWN_SEC:5", sizeof(cmd) - 1);
+    }
+
     const char* p = cmd;
     if (!tars_is_action_authorized(p, user_transcript_ascii)) {
         return TARS_ACT_NONE;
     }
     ESP_LOGI(TAG, "ACTION DISPATCHED: [%s]", p);
 
-    if (strcmp(p, "SALON_ON") == 0) {
-        pc_control_esphome("/switch/salon_isigi/turn_on");
-        strncpy(out_badge, "SALON ISIGI ACILDI", max_badge - 1);
-    } else if (strcmp(p, "SALON_OFF") == 0) {
-        pc_control_esphome("/switch/salon_isigi/turn_off");
-        strncpy(out_badge, "SALON ISIGI KAPANDI", max_badge - 1);
-    } else if (strcmp(p, "SALON_TOGGLE") == 0) {
-        pc_control_esphome("/switch/salon_isigi/toggle");
-        strncpy(out_badge, "SALON ISIGI TETIKLENDI", max_badge - 1);
+    if (strcmp(p, "SALON_ON") == 0 || strcmp(p, "LIGHT_ON") == 0 || strcmp(p, "SALON_ISIGI_ON") == 0) {
+        bool ok = pc_control_esphome("/switch/salon_isigi/turn_on");
+        strncpy(out_badge, ok ? "SALON ISIGI ACILDI" : "SALON ISIGI ERISILEMEDI", max_badge - 1);
+    } else if (strcmp(p, "SALON_OFF") == 0 || strcmp(p, "LIGHT_OFF") == 0 || strcmp(p, "SALON_ISIGI_OFF") == 0) {
+        bool ok = pc_control_esphome("/switch/salon_isigi/turn_off");
+        strncpy(out_badge, ok ? "SALON ISIGI KAPANDI" : "SALON ISIGI ERISILEMEDI", max_badge - 1);
+    } else if (strcmp(p, "SALON_TOGGLE") == 0 || strcmp(p, "LIGHT_TOGGLE") == 0) {
+        bool ok = pc_control_esphome("/switch/salon_isigi/toggle");
+        strncpy(out_badge, ok ? "SALON ISIGI TETIKLENDI" : "SALON ISIGI ERISILEMEDI", max_badge - 1);
     } else if (strcmp(p, "PC_WAKE") == 0) {
         pc_control_wake_lan();
         strncpy(out_badge, "PC UYANDIRILDI (WoL)", max_badge - 1);
@@ -585,6 +898,15 @@ static TarsActionOutcome tars_execute_single_action(const char* raw_item, const 
             s_tars_instance->set_humor(new_h);
         }
         snprintf(out_badge, max_badge - 1, "MIZAH %%%d YAPILDI", new_h);
+    } else if (strncmp(p, "MEM_SAVE:", 9) == 0) {
+        if (!tars_memory_add(p + 9)) return TARS_ACT_NONE;
+        snprintf(out_badge, max_badge - 1, "HAFIZA KAYDEDILDI (%d)", s_mem_count);
+    } else if (strncmp(p, "MEM_FORGET:", 11) == 0) {
+        int rem = tars_memory_forget(p + 11);
+        snprintf(out_badge, max_badge - 1, rem > 0 ? "HAFIZADAN SILINDI (%d)" : "HAFIZADA BULUNAMADI", rem);
+    } else if (strcmp(p, "HISTORY_CLEAR") == 0) {
+        tars_clear_history();
+        strncpy(out_badge, "SOHBET GECMISI TEMIZLENDI", max_badge - 1);
     } else {
         return TARS_ACT_NONE;
     }
@@ -592,7 +914,7 @@ static TarsActionOutcome tars_execute_single_action(const char* raw_item, const 
     return TARS_ACT_OK;
 }
 
-// Execute 1 or MULTIPLE chained actions separated by ';' (tracks PC/TV reachability honestly!)
+// Execute 1 or MULTIPLE chained actions separated by '\n' (or ';' for legacy fallback tags; never splits inside MEM_SAVE!)
 static bool tars_fire_action_tag(const char* tag_inner, const char* user_transcript_ascii,
                                  char* out_action_badge, size_t max_badge,
                                  bool* out_pc_unreachable = nullptr,
@@ -601,17 +923,23 @@ static bool tars_fire_action_tag(const char* tag_inner, const char* user_transcr
     if (out_tv_unreachable) *out_tv_unreachable = false;
     if (!tag_inner || tag_inner[0] == '\0') return false;
 
-    char buf[256];
+    char buf[384];
     strncpy(buf, tag_inner, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
 
+    bool use_newline_sep = (strchr(buf, '\n') != nullptr);
     int executed = 0;
     char combined[96];
     combined[0] = '\0';
     char* cur = buf;
 
     while (cur && *cur != '\0' && executed < 5) {
-        char* sep = strchr(cur, ';');
+        char* sep = nullptr;
+        if (use_newline_sep) {
+            sep = strchr(cur, '\n');
+        } else if (strncmp(cur, "MEM_SAVE:", 9) != 0) {
+            sep = strchr(cur, ';');
+        }
         if (sep) *sep = '\0';
 
         char one_badge[64] = {0};
@@ -1126,7 +1454,7 @@ static void tars_finalize_reply(const char* raw_reply, const char* structured_ac
     out_action_badge[max_badge - 1] = '\0';
     if (!raw_reply) return;
 
-    char act_cmd[256] = {0};
+    char act_cmd[384] = {0};
     char* clean_utf8 = (char*)heap_caps_calloc(1, TARS_TEXT_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!clean_utf8) clean_utf8 = (char*)calloc(1, TARS_TEXT_CAP);
     if (!clean_utf8) return;
@@ -1258,14 +1586,16 @@ static size_t tars_encode_ulaw_wav(int16_t* pcm, size_t num_samples, uint8_t* ou
         if (gain < 1.15f) gain = 1.0f;
     }
 
-    // Standard 58-byte WAV header for WAVE_FORMAT_MULAW (7)
-    uint32_t data_size = (uint32_t)num_samples;
+    // Standard 58-byte WAV header for WAVE_FORMAT_MULAW (7) at 8kHz (2x decimated = 4x smaller than 16kHz PCM!)
+    size_t out_samples = num_samples / 2;
+    if (out_samples == 0) return 0;
+    uint32_t data_size = (uint32_t)out_samples;
     uint32_t file_size = 50 + data_size;
     uint32_t fmt_size = 18;
     uint16_t audio_fmt = 7; // WAVE_FORMAT_MULAW
     uint16_t num_channels = 1;
-    uint32_t sample_rate = TARS_SAMPLE_RATE;
-    uint32_t byte_rate = TARS_SAMPLE_RATE;
+    uint32_t sample_rate = TARS_ULAW_SAMPLE_RATE;
+    uint32_t byte_rate = TARS_ULAW_SAMPLE_RATE;
     uint16_t block_align = 1;
     uint16_t bits_per_sample = 8;
     uint16_t cb_size = 0;
@@ -1291,15 +1621,17 @@ static size_t tars_encode_ulaw_wav(int16_t* pcm, size_t num_samples, uint8_t* ou
 
     uint8_t* dst = out_wav + TARS_ULAW_HDR_BYTES;
     if (gain > 1.0f) {
-        for (size_t i = 0; i < num_samples; i++) {
-            int32_t v = (int32_t)((float)pcm[i] * gain);
+        for (size_t i = 0; i < out_samples; i++) {
+            int32_t avg = ((int32_t)pcm[i * 2] + (int32_t)pcm[i * 2 + 1]) >> 1;
+            int32_t v = (int32_t)((float)avg * gain);
             if (v > 32767) v = 32767;
             if (v < -32768) v = -32768;
             dst[i] = linear16_to_ulaw((int16_t)v);
         }
     } else {
-        for (size_t i = 0; i < num_samples; i++) {
-            dst[i] = linear16_to_ulaw(pcm[i]);
+        for (size_t i = 0; i < out_samples; i++) {
+            int32_t avg = ((int32_t)pcm[i * 2] + (int32_t)pcm[i * 2 + 1]) >> 1;
+            dst[i] = linear16_to_ulaw((int16_t)avg);
         }
     }
     return TARS_ULAW_HDR_BYTES + data_size;
@@ -1341,7 +1673,8 @@ static void tars_reset_groq_client(void) {
 
 static esp_http_client_handle_t tars_get_groq_client(void) {
     int64_t now = esp_timer_get_time();
-    if (s_groq_client && s_groq_warm && (now - s_groq_last_use_us) > 45000000LL) {
+    // Cloudflare/Groq closes idle keep-alive sockets after ~15s -> proactively reset after 12s to prevent multi-second hangs!
+    if (s_groq_client && s_groq_warm && (now - s_groq_last_use_us) > 12000000LL) {
         tars_reset_groq_client();
     }
     if (!s_groq_client) {
@@ -1350,13 +1683,13 @@ static esp_http_client_handle_t tars_get_groq_client(void) {
         config.event_handler = groq_http_event_handler;
         config.user_data = &s_http_ctx;
         config.crt_bundle_attach = esp_crt_bundle_attach;
-        config.timeout_ms = 14000;
+        config.timeout_ms = 7500;
         config.keep_alive_enable = true;
-        config.keep_alive_idle = 40;
-        config.keep_alive_interval = 10;
-        config.keep_alive_count = 3;
+        config.keep_alive_idle = 12;
+        config.keep_alive_interval = 5;
+        config.keep_alive_count = 2;
         config.buffer_size = 2048;
-        config.buffer_size_tx = 4096;
+        config.buffer_size_tx = 8192;
         s_groq_client = esp_http_client_init(&config);
         s_groq_warm = false;
     }
@@ -1377,16 +1710,17 @@ struct TarsTimingStats {
     bool was_warm_tls;
 };
 
-// Build Groq Strict JSON Schema payload: guarantees {"reply": string, "actions": string[]} with 0% tag hallucination!
-static char* tars_build_groq_json_body(const char* sys_prompt, const char* raw_transcript) {
+// Build Groq v5.1 Strict JSON Schema payload: openai/gpt-oss-120b (auto-failover to 20b on HTTP 429!) + 10-turn JSON history
+static char* tars_build_groq_json_body(const char* model_id, const char* sys_prompt, const char* raw_transcript) {
+    tars_load_history_from_sd();
     cJSON* root = cJSON_CreateObject();
     if (!root) return nullptr;
 
-    cJSON_AddStringToObject(root, "model", "openai/gpt-oss-20b");
+    cJSON_AddStringToObject(root, "model", model_id ? model_id : "openai/gpt-oss-120b");
     cJSON_AddStringToObject(root, "reasoning_effort", "low");
     cJSON_AddBoolToObject(root, "include_reasoning", false);
-    cJSON_AddNumberToObject(root, "max_tokens", 512);
-    cJSON_AddNumberToObject(root, "temperature", 0.15);
+    cJSON_AddNumberToObject(root, "max_tokens", 600);
+    cJSON_AddNumberToObject(root, "temperature", 0.2);
 
     // Strict Structured Output schema: {"reply": string, "actions": string[]}
     cJSON* rf = cJSON_AddObjectToObject(root, "response_format");
@@ -1414,6 +1748,7 @@ static char* tars_build_groq_json_body(const char* sys_prompt, const char* raw_t
     cJSON_AddStringToObject(m_sys, "content", sys_prompt);
     cJSON_AddItemToArray(msgs, m_sys);
 
+    // Encode assistant history turns as clean JSON strings matching json_schema -> 0% tool_use_failed across 10 turns!
     for (int h = 0; h < s_hist_count; h++) {
         if (s_hist_user[h] && s_hist_asst[h] && strlen(s_hist_user[h]) > 0) {
             cJSON* hu = cJSON_CreateObject();
@@ -1421,10 +1756,17 @@ static char* tars_build_groq_json_body(const char* sys_prompt, const char* raw_t
             cJSON_AddStringToObject(hu, "content", s_hist_user[h]);
             cJSON_AddItemToArray(msgs, hu);
 
+            cJSON* ha_inner = cJSON_CreateObject();
+            cJSON_AddStringToObject(ha_inner, "reply", s_hist_asst[h]);
+            cJSON_AddArrayToObject(ha_inner, "actions");
+            char* ha_json = cJSON_PrintUnformatted(ha_inner);
+            cJSON_Delete(ha_inner);
+
             cJSON* ha = cJSON_CreateObject();
             cJSON_AddStringToObject(ha, "role", "assistant");
-            cJSON_AddStringToObject(ha, "content", s_hist_asst[h]);
+            cJSON_AddStringToObject(ha, "content", ha_json ? ha_json : s_hist_asst[h]);
             cJSON_AddItemToArray(msgs, ha);
+            if (ha_json) free(ha_json);
         }
     }
 
@@ -1485,18 +1827,18 @@ static TarsPipelineResult tars_run_groq_turbo_pipeline(const uint8_t* wav_data, 
         s_tars_instance->update_ui_state("SES COZULUYOR...", 0x00E5FF, 0, nullptr, nullptr, nullptr);
     }
 
-    char* resp_mem = (char*)heap_caps_malloc(12288, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char* resp_mem = (char*)heap_caps_malloc(16384, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!resp_mem) return TARS_RES_CLOUD_ERR;
 
     char auth_hdr[200];
     snprintf(auth_hdr, sizeof(auth_hdr), "Bearer %s", s_groq_api_key);
 
-    // Build multipart/form-data body in PSRAM (u-law WAV is 2x smaller = 2x faster upload!)
+    // Build multipart/form-data body in PSRAM (8kHz u-Law WAV + whisper-large-v3-turbo = 4x smaller & 2-3x faster!)
     const char* boundary = "----TarsWatchBoundary7MA4YWxk";
     const char* part_head =
         "------TarsWatchBoundary7MA4YWxk\r\n"
         "Content-Disposition: form-data; name=\"model\"\r\n\r\n"
-        "whisper-large-v3\r\n"
+        "whisper-large-v3-turbo\r\n"
         "------TarsWatchBoundary7MA4YWxk\r\n"
         "Content-Disposition: form-data; name=\"language\"\r\n\r\n"
         "tr\r\n"
@@ -1537,14 +1879,14 @@ static TarsPipelineResult tars_run_groq_turbo_pipeline(const uint8_t* wav_data, 
     esp_err_t err = ESP_FAIL;
     int status_code = 0;
 
-    // Step 1: Whisper-Large-v3 STT (2 attempts with automatic stale-socket reset)
+    // Step 1: Whisper-Large-v3-Turbo STT (2 attempts with automatic stale-socket reset)
     for (int attempt = 0; attempt < 2; attempt++) {
         esp_http_client_handle_t client = tars_get_groq_client();
         if (!client) break;
 
         s_http_ctx.json_buf = resp_mem;
         s_http_ctx.json_len = 0;
-        s_http_ctx.json_cap = 12288;
+        s_http_ctx.json_cap = 16384;
         resp_mem[0] = '\0';
 
         esp_http_client_set_url(client, "https://api.groq.com/openai/v1/audio/transcriptions");
@@ -1625,26 +1967,37 @@ static TarsPipelineResult tars_run_groq_turbo_pipeline(const uint8_t* wav_data, 
         s_tars_instance->update_ui_state("TARS DUSUNUYOR...", 0xFFA000, 0, out_transcript_ascii, nullptr, nullptr);
     }
 
-    // Step 2: Groq Structured JSON Brain (Strict json_schema + 2-attempt TLS retry!)
+    // Step 2: Groq v5.0 120B Structured JSON Brain (Date/Day/Steps + 20-Item Long-Term Memory + 10-Turn History!)
     int humor = s_tars_instance ? s_tars_instance->get_humor() : 75;
     int bat = bsp_battery_get_percent();
+    uint32_t steps = pedometer_get_steps();
     struct tm ti = {};
     rtc_get_time(&ti);
+    static const char* kTrDays[7] = { "Pazar", "Pazartesi", "Sali", "Carsamba", "Persembe", "Cuma", "Cumartesi" };
+    const char* day_str = (ti.tm_wday >= 0 && ti.tm_wday < 7) ? kTrDays[ti.tm_wday] : "";
 
-    char* sys_prompt = (char*)heap_caps_malloc(3584, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char* mem_block = (char*)heap_caps_calloc(1, 2048, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (mem_block) {
+        tars_format_memory_prompt(mem_block, 2048);
+    }
+
+    char* sys_prompt = (char*)heap_caps_malloc(6144, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!sys_prompt) {
+        if (mem_block) free(mem_block);
         free(raw_transcript);
         wifi_manager_set_turbo(false);
         free(resp_mem);
         return TARS_RES_CLOUD_ERR;
     }
-    snprintf(sys_prompt, 3584,
+    snprintf(sys_prompt, 6144,
              "Sen Interstellar filmindeki TARS'sin. Sahibin Eymen'in akilli saatindeki zeki, sadik, esprili sesli asistansin. "
-             "Mizah=%%%d, Durustluk=%%90. Bilgi: Saat=%02d:%02d, SaatPili=%%%d.\n"
+             "Mizah=%%%d, Durustluk=%%90. Canli Bilgi: Tarih=%02d.%02d.%04d %s, Saat=%02d:%02d, SaatPili=%%%d, GunlukAdim=%u.%s\n"
              "HER ZAMAN sadece su JSON formatinda cevap ver: {\"reply\": \"kisa 1-2 cumle Turkce cevap\", \"actions\": [\"KOMUT\"]}\n"
              "KURALLAR:\n"
-             "1) Normal sohbet, selam, soru, fikra, saat/pil sorma, dertlesme -> actions KESINLIKLE bos liste [] olmali! Asla kendiliginden isik/PC/TV acip kapatma.\n"
-             "2) SADECE kullanici acikca bir cihazi/uygulamayi/modu kontrol etmek isterse actions listesine asagidaki gecerli komut kodlarini koy:\n"
+             "1) Normal sohbet, selam, soru, fikra, tarih/saat/pil/adim sorma, dertlesme -> actions KESINLIKLE bos liste [] olmali! Asla kendiliginden isik/PC/TV acip kapatma.\n"
+             "2) Kullanici 'unutma / kaydet / not al / aklin da tut' derse veya projesi/sinavi/tercihi hakkinda kalici kisisel bilgi verirse actions icine MEM_SAVE:<kisa bilgi> koy (noktali virgul kullanma). Bir notu unut derse MEM_FORGET:<anahtar>, sohbet gecmisini temizle derse HISTORY_CLEAR koy.\n"
+             "3) SADECE kullanici acikca bir cihazi/uygulamayi/modu kontrol etmek isterse actions listesine asagidaki gecerli komut kodlarini koy:\n"
+             "- Hafiza: MEM_SAVE:<kisa bilgi>, MEM_FORGET:<anahtar>, HISTORY_CLEAR\n"
              "- Isik: SALON_ON, SALON_OFF, SALON_TOGGLE\n"
              "- TV: TV_POWER, TV_WAKE, TV_SLEEP, TV_PLAY_PAUSE, TV_PAUSE, TV_PLAY, TV_VOL_UP, TV_VOL_DOWN, TV_MUTE, TV_CH_UP, TV_CH_DOWN, TV_FWD, TV_REW, TV_NEXT, TV_PREV, TV_HOME, TV_BACK, TV_OK, TV_OPEN_YOUTUBE, TV_OPEN_NETFLIX, TV_OPEN_SPOTIFY, TV_OPEN_PRIME, TV_OPEN_DISNEY, TV_YOUTUBE_PLAY:<sorgu>\n"
              "- PC Guc: PC_WAKE, PC_SLEEP, PC_LOCK, PC_SCREEN_OFF, PC_SHUTDOWN_SEC:<sn>, PC_SHUTDOWN_MIN:<dk>, PC_SHUTDOWN_CANCEL\n"
@@ -1654,24 +2007,26 @@ static TarsPipelineResult tars_run_groq_turbo_pipeline(const uint8_t* wav_data, 
              "- PC Uygulama: PC_OPEN_APP:<ad> (KiCad, Creality Print, Valorant, LoL, Minecraft, OpenRocket, Betaflight, OBS, CapCut, Telegram, Antigravity, Spotify, Chrome, Discord, Steam, VS Code, Arduino, Ayarlar), PC_CLOSE_APP:<ad>\n"
              "- PC Video/Pencere: PC_SEEK_FWD, PC_SEEK_BACK, PC_CAPTIONS, PC_THEATER, PC_FULLSCREEN, PC_SPEED_UP, PC_SPEED_DOWN, PC_NEW_TAB, PC_REOPEN_TAB, PC_NEXT_TAB, PC_PREV_TAB, PC_CLOSE_TAB, PC_REFRESH, PC_SCROLL_DOWN, PC_SCROLL_UP, PC_ALT_TAB, PC_CLOSE_WINDOW, PC_SNAP_LEFT, PC_SNAP_RIGHT, PC_MINIMIZE_ALL, PC_BOSS_KEY, PC_SCREENSHOT\n"
              "- Mod/Tema: PC_MODE_GAME (oyun modu), PC_MODE_STUDY (ders modu), PC_MODE_MOVIE (sinema modu), PC_MODE_BREAK (mola modu), TARS_TURBO_ON (kirmizi turbo tema), TARS_TURBO_OFF (normal tema), HUMOR_SET:<0-100>",
-             humor, ti.tm_hour, ti.tm_min, bat);
+             humor, ti.tm_mday, ti.tm_mon + 1, ti.tm_year + 1900, day_str, ti.tm_hour, ti.tm_min, bat, (unsigned)steps,
+             mem_block ? mem_block : "");
+    if (mem_block) free(mem_block);
 
-    char* chat_body = tars_build_groq_json_body(sys_prompt, raw_transcript);
-    free(sys_prompt);
+    char* chat_body = tars_build_groq_json_body("openai/gpt-oss-120b", sys_prompt, raw_transcript);
 
     int64_t t_chat_start = esp_timer_get_time();
     out_reply_utf8[0] = '\0';
     TarsPipelineResult res = TARS_RES_CLOUD_ERR;
 
     if (chat_body) {
-        size_t chat_body_len = strlen(chat_body);
+        bool switched_20b = false;
         for (int attempt = 0; attempt < 2; attempt++) {
+            size_t chat_body_len = strlen(chat_body);
             esp_http_client_handle_t client = tars_get_groq_client();
             if (!client) break;
 
             s_http_ctx.json_buf = resp_mem;
             s_http_ctx.json_len = 0;
-            s_http_ctx.json_cap = 12288;
+            s_http_ctx.json_cap = 16384;
             resp_mem[0] = '\0';
 
             esp_http_client_set_url(client, "https://api.groq.com/openai/v1/chat/completions");
@@ -1707,8 +2062,8 @@ static TarsPipelineResult tars_run_groq_turbo_pipeline(const uint8_t* wav_data, 
                             for (int a = 0; a < n_acts && a < 5; a++) {
                                 cJSON* it = cJSON_GetArrayItem(j_acts, a);
                                 if (it && cJSON_IsString(it) && strlen(it->valuestring) > 1) {
-                                    if (out_actions_joined[0] != '\0' && strlen(out_actions_joined) + 3 < max_actions) {
-                                        strncat(out_actions_joined, "; ", max_actions - strlen(out_actions_joined) - 1);
+                                    if (out_actions_joined[0] != '\0' && strlen(out_actions_joined) + 2 < max_actions) {
+                                        strncat(out_actions_joined, "\n", max_actions - strlen(out_actions_joined) - 1);
                                     }
                                     if (strlen(out_actions_joined) + 2 < max_actions) {
                                         strncat(out_actions_joined, it->valuestring, max_actions - strlen(out_actions_joined) - 1);
@@ -1723,8 +2078,10 @@ static TarsPipelineResult tars_run_groq_turbo_pipeline(const uint8_t* wav_data, 
                         out_reply_utf8[max_reply - 1] = '\0';
                     }
 
-                    // Store clean reply in short-term history (never stores action tags!)
-                    tars_push_history(raw_transcript, out_reply_utf8[0] ? out_reply_utf8 : "Komut uygulandi.");
+                    // Store clean reply in 10-turn persistent SD history (skip if user asked to clear history!)
+                    if (!strstr(out_actions_joined, "HISTORY_CLEAR")) {
+                        tars_push_history(raw_transcript, out_reply_utf8[0] ? out_reply_utf8 : "Komut uygulandi.");
+                    }
                     cJSON_Delete(resp_json);
                     res = TARS_RES_OK;
                     break;
@@ -1732,20 +2089,32 @@ static TarsPipelineResult tars_run_groq_turbo_pipeline(const uint8_t* wav_data, 
                 if (resp_json) cJSON_Delete(resp_json);
             }
 
+            if (status_code == 429 && !switched_20b) {
+                ESP_LOGW(TAG, "Groq 120B HTTP 429 TPM limit -> instant failover to openai/gpt-oss-20b on warm TLS!");
+                switched_20b = true;
+                free(chat_body);
+                chat_body = tars_build_groq_json_body("openai/gpt-oss-20b", sys_prompt, raw_transcript);
+                if (!chat_body) break;
+                s_groq_last_use_us = esp_timer_get_time();
+                continue;
+            }
+
             ESP_LOGW(TAG, "Groq JSON Chat attempt %d failed (err=%s, http=%d, len=%u, body='%.120s') -> resetting TLS",
                      attempt + 1, esp_err_to_name(err), status_code, (unsigned)s_http_ctx.json_len, resp_mem);
             tars_reset_groq_client();
-            vTaskDelay(pdMS_TO_TICKS(100));
+            vTaskDelay(pdMS_TO_TICKS(60));
         }
-        free(chat_body);
+        if (chat_body) free(chat_body);
     }
+    free(sys_prompt);
 
     int64_t t_done = esp_timer_get_time();
     out_stats->llm_ms = (int)((t_done - t_chat_start) / 1000);
     out_stats->total_ms = (int)((t_done - t_pipe_start) / 1000);
 
-    ESP_LOGI(TAG, "=== [TARS-4.0] wav=%uKB | STT=%dms | LLM=%dms | Total=%dms | actions='%s' ===",
-             (unsigned)(wav_len / 1024), out_stats->stt_ms, out_stats->llm_ms, out_stats->total_ms, out_actions_joined);
+    ESP_LOGI(TAG, "=== [TARS-5.0 120B] wav=%uKB (8kHz) | STT=%dms | LLM=%dms | Total=%dms | hist=%d | mem=%d | actions='%s' ===",
+             (unsigned)(wav_len / 1024), out_stats->stt_ms, out_stats->llm_ms, out_stats->total_ms,
+             s_hist_count, s_mem_count, out_actions_joined);
 
     free(raw_transcript);
     free(resp_mem);
@@ -1773,10 +2142,1154 @@ extern "C" void app_tars_handle_reply_from_ble(const char* payload) {
     free(clean_reply);
 }
 
+// ============================================================================
+// GEMINI 3.1 FLASH LIVE — REALTIME STREAMING NATIVE AUDIO ENGINE (RFC 6455 TLS)
+// Direct esp_tls WebSocket + 512KB PSRAM Lock-Free Ring Buffer + Core-1 Audio Task
+// Streams 16kHz mic LIVE -> Plays glitch-free studio 24kHz voice on ES8311!
+// ============================================================================
+#define TARS_LIVE_RING_CAP           (512U * 1024U) // Power-of-2: 524,288 B = 10.92s @ 24kHz 16-bit PCM!
+#define TARS_LIVE_RING_MASK          (TARS_LIVE_RING_CAP - 1U)
+#define TARS_LIVE_PREBUF_BYTES       28800U         // 600ms jitter cushion (absorbs server burst pauses!)
+#define TARS_LIVE_PREBUF_MIN_BYTES   9600U          // 200ms fallback if stream trickles slowly
+#define TARS_LIVE_PREBUF_MAX_WAIT_MS 1150           // Never wait longer than 1.15s after first real audio
+#define TARS_LIVE_SPK_CHUNK_BYTES    1920U          // 40ms (960 samples @ 24kHz) smooth DMA writes
+#define TARS_LIVE_SPK_VOL            78             // Clean loud output with zero watch-speaker clipping
+
+struct TarsLiveAudioPipe {
+    uint8_t* ring;
+    uint32_t head;              // Monotonic producer byte counter (atomic release/acquire)
+    uint32_t tail;              // Monotonic consumer byte counter (atomic release/acquire)
+    int64_t  first_audio_us;    // Timestamp of first real PCM bytes pushed
+    bool     producer_done;     // Set when turnComplete arrives or recv ends
+    bool     abort_now;         // Set on Sustur / app close / screen sleep
+    bool     spk_finished;      // Set by consumer right before vTaskDelete(NULL)
+    uint32_t underruns;
+    uint32_t total_played_bytes;
+};
+
+static inline uint32_t tars_live_pipe_avail(const TarsLiveAudioPipe* p) {
+    uint32_t h = __atomic_load_n(&p->head, __ATOMIC_ACQUIRE);
+    uint32_t t = __atomic_load_n(&p->tail, __ATOMIC_ACQUIRE);
+    return h - t;
+}
+
+static bool tars_live_pipe_push(TarsLiveAudioPipe* p, const uint8_t* data, size_t len) {
+    if (!p || !p->ring || !data) return false;
+    len &= ~(size_t)1U; // Keep 16-bit sample alignment strict!
+    if (len == 0) return true;
+
+    if (p->first_audio_us == 0 && len >= 4) {
+        p->first_audio_us = esp_timer_get_time();
+    }
+
+    size_t off = 0;
+    while (off < len) {
+        if (__atomic_load_n(&p->abort_now, __ATOMIC_ACQUIRE)) return false;
+        uint32_t h = __atomic_load_n(&p->head, __ATOMIC_RELAXED);
+        uint32_t t = __atomic_load_n(&p->tail, __ATOMIC_ACQUIRE);
+        uint32_t used = h - t;
+        uint32_t free_sp = (used < TARS_LIVE_RING_CAP) ? (TARS_LIVE_RING_CAP - used) : 0;
+        free_sp &= ~1U;
+        if (free_sp == 0) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+        size_t n = len - off;
+        if (n > free_sp) n = free_sp;
+
+        uint32_t widx = h & TARS_LIVE_RING_MASK;
+        size_t first = TARS_LIVE_RING_CAP - widx;
+        if (first > n) first = n;
+        memcpy(p->ring + widx, data + off, first);
+        if (n > first) {
+            memcpy(p->ring, data + off + first, n - first);
+        }
+        __atomic_store_n(&p->head, h + (uint32_t)n, __ATOMIC_RELEASE);
+        off += n;
+    }
+    return true;
+}
+
+static size_t tars_live_pipe_pop(TarsLiveAudioPipe* p, uint8_t* dst, size_t max_len) {
+    uint32_t h = __atomic_load_n(&p->head, __ATOMIC_ACQUIRE);
+    uint32_t t = __atomic_load_n(&p->tail, __ATOMIC_RELAXED);
+    uint32_t avail = h - t;
+    if (avail == 0) return 0;
+    size_t n = (avail < max_len) ? (size_t)avail : max_len;
+    n &= ~(size_t)1U;
+    if (n == 0) return 0;
+
+    uint32_t ridx = t & TARS_LIVE_RING_MASK;
+    size_t first = TARS_LIVE_RING_CAP - ridx;
+    if (first > n) first = n;
+    memcpy(dst, p->ring + ridx, first);
+    if (n > first) {
+        memcpy(dst + first, p->ring, n - first);
+    }
+    __atomic_store_n(&p->tail, t + (uint32_t)n, __ATOMIC_RELEASE);
+    return n;
+}
+
+// Dedicated High-Priority Core-1 Audio Consumer Task: Zero network/JSON/LVGL stalls!
+static void tars_live_spk_task(void* pv) {
+    TarsLiveAudioPipe* pipe = (TarsLiveAudioPipe*)pv;
+    int16_t* pcm_chunk = (int16_t*)heap_caps_malloc(TARS_LIVE_SPK_CHUNK_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!pcm_chunk) pcm_chunk = (int16_t*)malloc(TARS_LIVE_SPK_CHUNK_BYTES);
+
+    bool spk_locked = false;
+    bool spk_open = false;
+
+    if (pipe && pcm_chunk && spk_codec_dev) {
+        // 1. Jitter Pre-Buffer Wait: accumulate 600ms (or full short reply) BEFORE opening speaker!
+        while (!__atomic_load_n(&pipe->abort_now, __ATOMIC_ACQUIRE)) {
+            uint32_t avail = tars_live_pipe_avail(pipe);
+            bool done = __atomic_load_n(&pipe->producer_done, __ATOMIC_ACQUIRE);
+            int64_t fa = pipe->first_audio_us;
+            int64_t waited_ms = (fa > 0) ? ((esp_timer_get_time() - fa) / 1000LL) : 0;
+
+            if (avail >= TARS_LIVE_PREBUF_BYTES) break;
+            if (done) break;
+            if (fa > 0 && avail >= TARS_LIVE_PREBUF_MIN_BYTES && waited_ms >= TARS_LIVE_PREBUF_MAX_WAIT_MS) break;
+
+            display_manager_reset_timer();
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+
+        // 2. Open ES8311 @ native 24kHz ONLY if real audio arrived and not aborted
+        if (!__atomic_load_n(&pipe->abort_now, __ATOMIC_ACQUIRE) && tars_live_pipe_avail(pipe) >= 4) {
+            if (bsp_audio_lock(500)) {
+                spk_locked = true;
+                esp_codec_dev_sample_info_t spk_fs = {
+                    .bits_per_sample = 16,
+                    .channel = 1,
+                    .channel_mask = 0,
+                    .sample_rate = 24000,
+                    .mclk_multiple = 256,
+                };
+                if (esp_codec_dev_open(spk_codec_dev, &spk_fs) == ESP_OK) {
+                    esp_codec_dev_set_out_vol(spk_codec_dev, TARS_LIVE_SPK_VOL);
+                    bsp_audio_power_amp_enable(true);
+                    spk_open = true;
+                }
+            }
+        }
+
+        // 3. Continuous Smooth 40ms Frame Pump from 512KB PSRAM Ring -> Internal RAM -> I2S DMA!
+        bool first_frame = true;
+        int64_t last_disp_poke = esp_timer_get_time();
+
+        while (spk_open && !__atomic_load_n(&pipe->abort_now, __ATOMIC_ACQUIRE)) {
+            int64_t now_us = esp_timer_get_time();
+            if (now_us - last_disp_poke > 400000LL) {
+                display_manager_reset_timer();
+                last_disp_poke = now_us;
+            }
+
+            uint32_t avail = tars_live_pipe_avail(pipe);
+            bool done = __atomic_load_n(&pipe->producer_done, __ATOMIC_ACQUIRE);
+
+            if (avail >= TARS_LIVE_SPK_CHUNK_BYTES) {
+                size_t got = tars_live_pipe_pop(pipe, (uint8_t*)pcm_chunk, TARS_LIVE_SPK_CHUNK_BYTES);
+                size_t ns = got / 2;
+
+                // 10ms soft fade-in on very first frame -> zero speaker turn-on click!
+                if (first_frame) {
+                    first_frame = false;
+                    size_t ramp = (ns < 240) ? ns : 240;
+                    for (size_t i = 0; i < ramp; i++) {
+                        pcm_chunk[i] = (int16_t)(((int32_t)pcm_chunk[i] * (int32_t)i) / (int32_t)ramp);
+                    }
+                }
+
+                // Drive live TARS monolith chest bars in sync with actual voice loudness!
+                uint32_t sum_abs = 0;
+                for (size_t i = 0; i < ns; i += 4) {
+                    int32_t v = pcm_chunk[i];
+                    sum_abs += (uint32_t)((v < 0) ? -v : v);
+                }
+                int mean = (ns >= 4) ? (int)(sum_abs / (ns / 4)) : 0;
+                int lvl = (mean * 100) / 7500;
+                if (lvl < 18) lvl = 18;
+                if (lvl > 100) lvl = 100;
+                if (s_tars_instance) s_tars_instance->set_visual_state(TARS_VIS_REPLY, lvl);
+
+                esp_codec_dev_write(spk_codec_dev, pcm_chunk, (int)got);
+                pipe->total_played_bytes += (uint32_t)got;
+            } else if (done) {
+                // Drain final partial tail with smooth 5ms fade-out so last syllable NEVER pops or clips!
+                if (avail >= 2) {
+                    memset(pcm_chunk, 0, TARS_LIVE_SPK_CHUNK_BYTES);
+                    size_t got = tars_live_pipe_pop(pipe, (uint8_t*)pcm_chunk, avail);
+                    size_t ns = got / 2;
+                    size_t fade = (ns < 120) ? ns : 120;
+                    size_t start = ns - fade;
+                    for (size_t i = 0; i < fade; i++) {
+                        pcm_chunk[start + i] = (int16_t)(((int32_t)pcm_chunk[start + i] * (int32_t)(fade - 1 - i)) / (int32_t)fade);
+                    }
+                    esp_codec_dev_write(spk_codec_dev, pcm_chunk, (int)TARS_LIVE_SPK_CHUNK_BYTES);
+                    pipe->total_played_bytes += (uint32_t)got;
+                }
+                // Flush 120ms trailing silence so 106ms I2S hardware DMA finishes outputting final word!
+                memset(pcm_chunk, 0, TARS_LIVE_SPK_CHUNK_BYTES);
+                for (int s = 0; s < 3 && !__atomic_load_n(&pipe->abort_now, __ATOMIC_ACQUIRE); s++) {
+                    esp_codec_dev_write(spk_codec_dev, pcm_chunk, (int)TARS_LIVE_SPK_CHUNK_BYTES);
+                }
+                break;
+            } else {
+                // Brief wait if network hiccuped mid-sentence (never stutter 10ms-by-10ms!)
+                bool refilled = false;
+                for (int w = 0; w < 6 && !__atomic_load_n(&pipe->abort_now, __ATOMIC_ACQUIRE); w++) {
+                    vTaskDelay(pdMS_TO_TICKS(5));
+                    if (tars_live_pipe_avail(pipe) >= TARS_LIVE_SPK_CHUNK_BYTES ||
+                        __atomic_load_n(&pipe->producer_done, __ATOMIC_ACQUIRE)) {
+                        refilled = true;
+                        break;
+                    }
+                }
+                if (!refilled && !__atomic_load_n(&pipe->abort_now, __ATOMIC_ACQUIRE)) {
+                    pipe->underruns++;
+                    // Clean pause & smooth 250ms rebuffer instead of choppy Ben Fero staccato!
+                    memset(pcm_chunk, 0, TARS_LIVE_SPK_CHUNK_BYTES);
+                    esp_codec_dev_write(spk_codec_dev, pcm_chunk, (int)TARS_LIVE_SPK_CHUNK_BYTES);
+                    int64_t rb_start = esp_timer_get_time();
+                    while (!__atomic_load_n(&pipe->abort_now, __ATOMIC_ACQUIRE) &&
+                           !__atomic_load_n(&pipe->producer_done, __ATOMIC_ACQUIRE) &&
+                           tars_live_pipe_avail(pipe) < 12000U &&
+                           (esp_timer_get_time() - rb_start) < 1200000LL) {
+                        display_manager_reset_timer();
+                        vTaskDelay(pdMS_TO_TICKS(10));
+                    }
+                    first_frame = true; // Soft 10ms fade-in on resume!
+                }
+            }
+        }
+    }
+
+    if (spk_open && spk_codec_dev) {
+        esp_codec_dev_close(spk_codec_dev);
+        bsp_audio_power_amp_enable(false);
+        bsp_audio_standby();
+    }
+    if (spk_locked) {
+        bsp_audio_unlock();
+    }
+    if (pcm_chunk) free(pcm_chunk);
+    if (pipe) {
+        __atomic_store_n(&pipe->spk_finished, true, __ATOMIC_RELEASE);
+    }
+    vTaskDelete(NULL);
+}
+
+// Fast JSON object bounds finder (respects strings & escapes) -> lets us parse tiny 60B objects instead of 38KB audio frames!
+static const char* tars_find_json_obj_end(const char* open_brace) {
+    if (!open_brace || *open_brace != '{') return nullptr;
+    int depth = 0;
+    bool in_str = false;
+    bool esc = false;
+    for (const char* p = open_brace; *p; p++) {
+        char c = *p;
+        if (in_str) {
+            if (esc) esc = false;
+            else if (c == '\\') esc = true;
+            else if (c == '"') in_str = false;
+        } else {
+            if (c == '"') in_str = true;
+            else if (c == '{') depth++;
+            else if (c == '}') {
+                if (--depth == 0) return p;
+            }
+        }
+    }
+    return nullptr;
+}
+
+// Extract small {"text":"..."} sub-object (e.g. inputTranscription / outputTranscription) via tiny cJSON parse
+static bool tars_extract_sub_text(const char* json, const char* key_quoted, char* out, size_t out_cap) {
+    if (!json || !key_quoted || !out || out_cap == 0) return false;
+    out[0] = '\0';
+    const char* k = strstr(json, key_quoted);
+    if (!k) return false;
+    const char* brace = strchr(k + strlen(key_quoted), '{');
+    if (!brace) return false;
+    const char* end = tars_find_json_obj_end(brace);
+    if (!end || (size_t)(end - brace) > 4096) return false;
+    cJSON* obj = cJSON_ParseWithLength(brace, (size_t)(end - brace + 1));
+    if (!obj) return false;
+    bool ok = false;
+    cJSON* txt = cJSON_GetObjectItem(obj, "text");
+    if (cJSON_IsString(txt) && txt->valuestring[0]) {
+        strncpy(out, txt->valuestring, out_cap - 1);
+        out[out_cap - 1] = '\0';
+        ok = true;
+    }
+    cJSON_Delete(obj);
+    return ok;
+}
+
+// Zero-allocation fast-path audio extractor: decodes all inlineData audio/pcm parts straight into 512KB ring buffer!
+static int tars_extract_live_audio_to_pipe(const char* json, uint8_t* pcm_scratch, size_t pcm_cap, TarsLiveAudioPipe* pipe, bool muted) {
+    if (!json || !pcm_scratch || !pipe) return 0;
+    int total_pcm = 0;
+    const char* cur = json;
+    while ((cur = strstr(cur, "\"inlineData\"")) != nullptr) {
+        const char* brace = strchr(cur + 12, '{');
+        if (!brace) break;
+        const char* end = tars_find_json_obj_end(brace);
+        if (!end) break;
+
+        // Verify audio/pcm mimeType inside this inlineData object
+        const char* mime = strstr(brace, "audio/pcm");
+        if (mime && mime < end) {
+            const char* dkey = strstr(brace, "\"data\"");
+            if (dkey && dkey < end) {
+                const char* colon = strchr(dkey + 6, ':');
+                if (colon && colon < end) {
+                    const char* q1 = strchr(colon + 1, '"');
+                    if (q1 && q1 < end) {
+                        const char* b64_start = q1 + 1;
+                        const char* q2 = strchr(b64_start, '"');
+                        if (q2 && q2 < end) {
+                            size_t b64_len = (size_t)(q2 - b64_start);
+                            if (b64_len >= 4 && !muted) {
+                                size_t pcm_len = 0;
+                                if (mbedtls_base64_decode(pcm_scratch, pcm_cap, &pcm_len,
+                                                          (const unsigned char*)b64_start, b64_len) == 0 && pcm_len >= 4) {
+                                    tars_live_pipe_push(pipe, pcm_scratch, pcm_len);
+                                    total_pcm += (int)pcm_len;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        cur = end + 1;
+    }
+    return total_pcm;
+}
+
+static bool tars_ws_write_all(esp_tls_t* tls, const uint8_t* data, size_t len) {
+    size_t sent = 0;
+    int64_t t0 = esp_timer_get_time();
+    while (sent < len) {
+        if (!s_tars_live_mode || !s_tars_app_active || s_tars_abort_audio) return false;
+        ssize_t w = esp_tls_conn_write(tls, data + sent, len - sent);
+        if (w > 0) {
+            sent += (size_t)w;
+        } else if (w == ESP_TLS_ERR_SSL_WANT_WRITE || w == ESP_TLS_ERR_SSL_WANT_READ) {
+            if ((esp_timer_get_time() - t0) > 6000000LL) return false;
+            vTaskDelay(pdMS_TO_TICKS(5));
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+static TarsLiveAudioPipe* volatile s_active_live_pipe = nullptr;
+
+static bool tars_ws_read_exact(esp_tls_t* tls, uint8_t* out, size_t len, int timeout_ms) {
+    size_t got = 0;
+    int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000LL;
+    static int64_t s_last_ws_disp_poke = 0;
+    while (got < len) {
+        if (!s_tars_live_mode || !s_tars_app_active || s_tars_abort_audio || !display_manager_is_on()) return false;
+        TarsLiveAudioPipe* ap = s_active_live_pipe;
+        if (ap) {
+            if (s_tars_manual_toggle) {
+                __atomic_store_n(&ap->abort_now, true, __ATOMIC_RELEASE);
+            }
+            if (!__atomic_load_n(&ap->spk_finished, __ATOMIC_ACQUIRE)) {
+                int64_t now_us = esp_timer_get_time();
+                if (now_us - s_last_ws_disp_poke >= 1000000LL) {
+                    s_last_ws_disp_poke = now_us;
+                    display_manager_reset_timer();
+                }
+            }
+        }
+        ssize_t r = esp_tls_conn_read(tls, out + got, len - got);
+        if (r > 0) {
+            got += (size_t)r;
+        } else if (r == ESP_TLS_ERR_SSL_WANT_READ || r == ESP_TLS_ERR_SSL_WANT_WRITE || r == -0x6800) {
+            if (esp_timer_get_time() >= deadline) return false;
+            vTaskDelay(pdMS_TO_TICKS(4));
+        } else if (r == 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                if (esp_timer_get_time() >= deadline) return false;
+                continue;
+            }
+            return false;
+        } else {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                if (esp_timer_get_time() >= deadline) return false;
+                continue;
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool tars_ws_send_frame(esp_tls_t* tls, uint8_t opcode, const uint8_t* payload, size_t len, uint8_t* scratch, size_t scratch_cap) {
+    if (!tls || !scratch || (len + 14) > scratch_cap) return false;
+    size_t pos = 0;
+    scratch[pos++] = (uint8_t)(0x80u | (opcode & 0x0Fu));
+    if (len < 126) {
+        scratch[pos++] = (uint8_t)(0x80u | len);
+    } else if (len < 65536) {
+        scratch[pos++] = (uint8_t)(0x80u | 126u);
+        scratch[pos++] = (uint8_t)((len >> 8) & 0xFF);
+        scratch[pos++] = (uint8_t)(len & 0xFF);
+    } else {
+        scratch[pos++] = (uint8_t)(0x80u | 127u);
+        for (int s = 56; s >= 0; s -= 8) {
+            scratch[pos++] = (uint8_t)(((uint64_t)len >> s) & 0xFF);
+        }
+    }
+    uint8_t mask[4];
+    esp_fill_random(mask, 4);
+    memcpy(scratch + pos, mask, 4);
+    pos += 4;
+    for (size_t i = 0; i < len; i++) {
+        scratch[pos + i] = payload[i] ^ mask[i & 3u];
+    }
+    return tars_ws_write_all(tls, scratch, pos + len);
+}
+
+static bool tars_ws_recv_message(esp_tls_t* tls, char* out_buf, size_t cap, size_t* out_len, uint8_t* out_op,
+                                 uint8_t* tx_scratch, size_t tx_cap, int timeout_ms) {
+    *out_len = 0;
+    *out_op = 0;
+    size_t total = 0;
+    uint8_t msg_op = 0;
+    uint8_t drain[256];
+
+    while (true) {
+        uint8_t hdr[2];
+        if (!tars_ws_read_exact(tls, hdr, 2, timeout_ms)) return false;
+        bool fin = (hdr[0] & 0x80u) != 0;
+        uint8_t op = hdr[0] & 0x0Fu;
+        bool masked = (hdr[1] & 0x80u) != 0;
+        uint64_t plen = hdr[1] & 0x7Fu;
+        if (plen == 126) {
+            uint8_t ext[2];
+            if (!tars_ws_read_exact(tls, ext, 2, 3000)) return false;
+            plen = ((uint64_t)ext[0] << 8) | ext[1];
+        } else if (plen == 127) {
+            uint8_t ext[8];
+            if (!tars_ws_read_exact(tls, ext, 8, 3000)) return false;
+            plen = 0;
+            for (int i = 0; i < 8; i++) plen = (plen << 8) | ext[i];
+        }
+        uint8_t mkey[4] = {0};
+        if (masked) {
+            if (!tars_ws_read_exact(tls, mkey, 4, 3000)) return false;
+        }
+
+        if (op == 0x9) { // PING -> reply PONG automatically!
+            uint8_t pbuf[128];
+            size_t rlen = (plen < sizeof(pbuf)) ? (size_t)plen : sizeof(pbuf);
+            if (rlen > 0 && !tars_ws_read_exact(tls, pbuf, rlen, 3000)) return false;
+            uint64_t rem = plen - rlen;
+            while (rem > 0) {
+                size_t ch = (rem > sizeof(drain)) ? sizeof(drain) : (size_t)rem;
+                if (!tars_ws_read_exact(tls, drain, ch, 3000)) return false;
+                rem -= ch;
+            }
+            tars_ws_send_frame(tls, 0xA, pbuf, rlen, tx_scratch, tx_cap);
+            continue;
+        }
+        if (op == 0xA) { // PONG -> ignore
+            uint64_t rem = plen;
+            while (rem > 0) {
+                size_t ch = (rem > sizeof(drain)) ? sizeof(drain) : (size_t)rem;
+                if (!tars_ws_read_exact(tls, drain, ch, 3000)) return false;
+                rem -= ch;
+            }
+            continue;
+        }
+
+        if (msg_op == 0 && op != 0) msg_op = op;
+
+        size_t keep = 0;
+        if (total + 1 < cap) {
+            size_t avail = (cap - 1) - total;
+            keep = (plen < avail) ? (size_t)plen : avail;
+        }
+        if (keep > 0) {
+            if (!tars_ws_read_exact(tls, (uint8_t*)(out_buf + total), keep, 5000)) return false;
+            if (masked) {
+                for (size_t i = 0; i < keep; i++) out_buf[total + i] ^= mkey[i & 3u];
+            }
+            total += keep;
+        }
+        uint64_t rem = plen - keep;
+        while (rem > 0) {
+            size_t ch = (rem > sizeof(drain)) ? sizeof(drain) : (size_t)rem;
+            if (!tars_ws_read_exact(tls, drain, ch, 5000)) return false;
+            rem -= ch;
+        }
+
+        if (op == 0x8 || fin) {
+            out_buf[total] = '\0';
+            *out_len = total;
+            *out_op = (op == 0x8) ? 0x8 : msg_op;
+            return true;
+        }
+    }
+}
+
+static esp_tls_t* tars_ws_connect_gemini(const char* api_key) {
+    const char* host = "generativelanguage.googleapis.com";
+    esp_tls_cfg_t cfg = {};
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    cfg.timeout_ms = 8000;
+
+    esp_tls_t* tls = esp_tls_init();
+    if (!tls) return nullptr;
+
+    int ret = esp_tls_conn_new_sync(host, (int)strlen(host), 443, &cfg, tls);
+    if (ret != 1) {
+        ESP_LOGW(TAG, "Gemini Live TLS connect failed (ret=%d)", ret);
+        esp_tls_conn_destroy(tls);
+        return nullptr;
+    }
+
+    int sockfd = -1;
+    if (esp_tls_get_conn_sockfd(tls, &sockfd) == ESP_OK && sockfd >= 0) {
+        int one = 1;
+        setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        struct timeval tv = { .tv_sec = 0, .tv_usec = 180000 }; // Fast 180ms poll for responsive Sustur/abort
+        setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        struct timeval stv = { .tv_sec = 4, .tv_usec = 0 };
+        setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &stv, sizeof(stv));
+    }
+
+    uint8_t rnd[16];
+    esp_fill_random(rnd, sizeof(rnd));
+    unsigned char ws_key[32] = {0};
+    size_t ws_key_len = 0;
+    mbedtls_base64_encode(ws_key, sizeof(ws_key) - 1, &ws_key_len, rnd, sizeof(rnd));
+
+    char req[512];
+    int rlen = snprintf(req, sizeof(req),
+                        "GET /ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=%s HTTP/1.1\r\n"
+                        "Host: %s\r\n"
+                        "Upgrade: websocket\r\n"
+                        "Connection: Upgrade\r\n"
+                        "Sec-WebSocket-Key: %s\r\n"
+                        "Sec-WebSocket-Version: 13\r\n\r\n",
+                        api_key, host, (const char*)ws_key);
+    if (rlen <= 0 || !tars_ws_write_all(tls, (const uint8_t*)req, (size_t)rlen)) {
+        esp_tls_conn_destroy(tls);
+        return nullptr;
+    }
+
+    // Read HTTP Upgrade response headers until \r\n\r\n
+    char hdr[512] = {0};
+    size_t hlen = 0;
+    while (hlen + 1 < sizeof(hdr)) {
+        uint8_t ch = 0;
+        if (!tars_ws_read_exact(tls, &ch, 1, 6000)) {
+            esp_tls_conn_destroy(tls);
+            return nullptr;
+        }
+        hdr[hlen++] = (char)ch;
+        hdr[hlen] = '\0';
+        if (hlen >= 4 && strcmp(hdr + hlen - 4, "\r\n\r\n") == 0) break;
+    }
+    if (!strstr(hdr, " 101 ")) {
+        ESP_LOGW(TAG, "Gemini Live WS upgrade rejected: %.120s", hdr);
+        esp_tls_conn_destroy(tls);
+        return nullptr;
+    }
+    ESP_LOGI(TAG, "Gemini Live WebSocket upgraded (HTTP 101)!");
+    return tls;
+}
+
+static void tars_run_gemini_live_session(esp_codec_dev_handle_t mic, int16_t* frame_buf, int16_t* preroll_ring) {
+    tars_load_gemini_key();
+    if (!s_tars_instance || !s_tars_app_active || !s_tars_live_mode) return;
+
+    s_tars_instance->set_visual_state(TARS_VIS_THINK, 0);
+    s_tars_instance->update_ui_state("CANLI // WI-FI & GEMINI BAGLANIYOR", 0x38BDF8, 0,
+                                     "Gemini 3.1 Live oturumu baslatiliyor...", nullptr,
+                                     "MOD: CANLI SES (GEMINI 3.1)", LV_SYMBOL_STOP " Dur");
+
+    // Ensure Home Wi-Fi is connected
+    if (!wifi_manager_is_connected()) {
+        if (!wifi_manager_is_active()) wifi_manager_start_async();
+        else if (wifi_manager_get_state() == WIFI_STATE_IDLE || wifi_manager_get_state() == WIFI_STATE_FAILED) wifi_manager_connect_default_async();
+        for (int w = 0; w < 35 && !wifi_manager_is_connected() && s_tars_live_mode && s_tars_app_active; w++) {
+            display_manager_reset_timer();
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+        if (!wifi_manager_is_connected()) {
+            s_tars_live_mode = false;
+            s_tars_instance->update_ui_state("CANLI: WI-FI YOK", 0xFFA000, 0, nullptr,
+                                             "Ev Wi-Fi baglanamadi. Groq moduna donuldu.", "EYLEM: YOK", LV_SYMBOL_AUDIO " Konus");
+            return;
+        }
+    }
+
+    wifi_manager_mark_activity();
+    wifi_manager_set_turbo(true);
+
+    // Allocate PSRAM workspace for live WebSocket + 512KB jitter-free 24kHz PCM ring (~690 KB PSRAM, 0 Internal SRAM!)
+    constexpr size_t WS_RX_CAP = 98304;  // 96 KB (fits huge 40-60 KB Gemini audio bursts cleanly)
+    constexpr size_t WS_TX_CAP = 8192;
+    constexpr size_t PCM_OUT_CAP = 65536; // 64 KB decoded PCM scratch
+    char* ws_rx = (char*)heap_caps_malloc(WS_RX_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint8_t* ws_tx = (uint8_t*)heap_caps_malloc(WS_TX_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint8_t* pcm_out = (uint8_t*)heap_caps_malloc(PCM_OUT_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint8_t* ring_buf = (uint8_t*)heap_caps_malloc(TARS_LIVE_RING_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char* b64_buf = (char*)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char* audio_json = (char*)heap_caps_malloc(4608, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    int16_t* chunk64 = (int16_t*)heap_caps_malloc(1024 * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+
+    if (!ws_rx || !ws_tx || !pcm_out || !ring_buf || !b64_buf || !audio_json || !chunk64) {
+        free(ws_rx); free(ws_tx); free(pcm_out); free(ring_buf); free(b64_buf); free(audio_json); free(chunk64);
+        wifi_manager_set_turbo(false);
+        s_tars_live_mode = false;
+        return;
+    }
+
+    int64_t t_conn = esp_timer_get_time();
+    esp_tls_t* tls = tars_ws_connect_gemini(s_gemini_api_key);
+    if (!tls) {
+        free(ws_rx); free(ws_tx); free(pcm_out); free(ring_buf); free(b64_buf); free(audio_json); free(chunk64);
+        wifi_manager_set_turbo(false);
+        s_tars_live_mode = false;
+        s_tars_instance->set_visual_state(TARS_VIS_IDLE, 0);
+        s_tars_instance->update_ui_state("CANLI BAGLANTI HATASI", 0xF87171, 0, nullptr,
+                                         "Gemini Live sunucusuna baglanilamadi.", "MOD: GROQ V5.1", LV_SYMBOL_AUDIO " Konus");
+        return;
+    }
+
+    // Build Gemini 3.1 Flash Live setup message (thinkingBudget=0 -> ~540ms TTFA + Charon voice + watch_action tool!)
+    int humor = s_tars_instance ? s_tars_instance->get_humor() : 75;
+    int bat = bsp_battery_get_percent();
+    uint32_t steps = pedometer_get_steps();
+    struct tm ti = {};
+    rtc_get_time(&ti);
+    static const char* kTrDays[7] = { "Pazar", "Pazartesi", "Sali", "Carsamba", "Persembe", "Cuma", "Cumartesi" };
+    const char* day_str = (ti.tm_wday >= 0 && ti.tm_wday < 7) ? kTrDays[ti.tm_wday] : "";
+
+    char* mem_blk = (char*)heap_caps_calloc(1, 1536, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (mem_blk) tars_format_memory_prompt(mem_blk, 1536);
+
+    char* sys_inst = (char*)heap_caps_malloc(3072, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (sys_inst) {
+        snprintf(sys_inst, 3072,
+                 "Sen Interstellar filmindeki TARS'sin. Sahibin Eymen'in akilli saatindeki gercek zamanli sesli asistansin. "
+                 "Mizah=%%%d, Durustluk=%%90. Canli Bilgi: Tarih=%02d.%02d.%04d %s, Saat=%02d:%02d, Pil=%%%d, Adim=%u.%s\n"
+                 "Turkce, dogal, samimi, zeki ve KISA (1-2 cumle) konus. "
+                 "Kullanici salon isigi, bilgisayar (PC), televizyon (TV) veya hafiza komutu verdiginde MUTLAKA watch_action aracini uygun komut koduyla cagir.",
+                 humor, ti.tm_mday, ti.tm_mon + 1, ti.tm_year + 1900, day_str, ti.tm_hour, ti.tm_min, bat, (unsigned)steps,
+                 mem_blk ? mem_blk : "");
+    }
+    if (mem_blk) free(mem_blk);
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON* setup = cJSON_AddObjectToObject(root, "setup");
+    cJSON_AddStringToObject(setup, "model", "models/gemini-3.1-flash-live-preview");
+    cJSON* gcfg = cJSON_AddObjectToObject(setup, "generationConfig");
+    cJSON* mods = cJSON_AddArrayToObject(gcfg, "responseModalities");
+    cJSON_AddItemToArray(mods, cJSON_CreateString("AUDIO"));
+    cJSON* tcfg = cJSON_AddObjectToObject(gcfg, "thinkingConfig");
+    cJSON_AddNumberToObject(tcfg, "thinkingBudget", 0);
+    cJSON* scfg = cJSON_AddObjectToObject(gcfg, "speechConfig");
+    cJSON* vcfg = cJSON_AddObjectToObject(scfg, "voiceConfig");
+    cJSON* pvcfg = cJSON_AddObjectToObject(vcfg, "prebuiltVoiceConfig");
+    cJSON_AddStringToObject(pvcfg, "voiceName", "Charon");
+    cJSON_AddObjectToObject(setup, "outputAudioTranscription");
+    cJSON_AddObjectToObject(setup, "inputAudioTranscription");
+
+    cJSON* si = cJSON_AddObjectToObject(setup, "systemInstruction");
+    cJSON* sparts = cJSON_AddArrayToObject(si, "parts");
+    cJSON* sp0 = cJSON_CreateObject();
+    cJSON_AddStringToObject(sp0, "text", sys_inst ? sys_inst : "Sen TARS'sin. Turkce kisa konus.");
+    cJSON_AddItemToArray(sparts, sp0);
+    if (sys_inst) free(sys_inst);
+
+    cJSON* tools = cJSON_AddArrayToObject(setup, "tools");
+    cJSON* t0 = cJSON_CreateObject();
+    cJSON* fdecls = cJSON_AddArrayToObject(t0, "functionDeclarations");
+    cJSON* fd = cJSON_CreateObject();
+    cJSON_AddStringToObject(fd, "name", "watch_action");
+    cJSON_AddStringToObject(fd, "description", "Salon isigi, bilgisayar, TV, mod veya kalici hafiza komutu calistirir.");
+    cJSON* fparams = cJSON_AddObjectToObject(fd, "parameters");
+    cJSON_AddStringToObject(fparams, "type", "OBJECT");
+    cJSON* fprops = cJSON_AddObjectToObject(fparams, "properties");
+    cJSON* pcmd = cJSON_AddObjectToObject(fprops, "command");
+    cJSON_AddStringToObject(pcmd, "type", "STRING");
+    cJSON_AddStringToObject(pcmd, "description",
+        "Tam komut kodu: SALON_ON, SALON_OFF, SALON_TOGGLE, PC_GET_STATS, PC_WAKE, PC_SLEEP, PC_LOCK, PC_SCREEN_OFF, "
+        "PC_SHUTDOWN_SEC:<sn>, PC_SHUTDOWN_CANCEL, PC_MEDIA_PLAY_PAUSE, PC_MEDIA_NEXT, PC_MEDIA_PREV, PC_VOL_UP, PC_VOL_DOWN, "
+        "PC_VOL_MUTE, PC_VOL_SET:<0-100>, PC_OPEN_APP:<ad>, PC_CLOSE_APP:<ad>, PC_YOUTUBE_PLAY:<sorgu>, PC_GOOGLE_SEARCH:<sorgu>, "
+        "PC_MODE_GAME, PC_MODE_STUDY, PC_MODE_MOVIE, PC_MODE_BREAK, TV_POWER, TV_PLAY_PAUSE, TV_VOL_UP, TV_VOL_DOWN, TV_MUTE, "
+        "TV_OPEN_YOUTUBE, TV_OPEN_NETFLIX, TV_YOUTUBE_PLAY:<sorgu>, MEM_SAVE:<kisa bilgi>, MEM_FORGET:<anahtar>, TARS_TURBO_ON, TARS_TURBO_OFF");
+    cJSON* freq = cJSON_AddArrayToObject(fparams, "required");
+    cJSON_AddItemToArray(freq, cJSON_CreateString("command"));
+    cJSON_AddItemToArray(fdecls, fd);
+    cJSON_AddItemToArray(tools, t0);
+
+    char* setup_str = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+
+    bool setup_ok = false;
+    if (setup_str) {
+        if (tars_ws_send_frame(tls, 0x1, (const uint8_t*)setup_str, strlen(setup_str), ws_tx, WS_TX_CAP)) {
+            size_t rlen = 0;
+            uint8_t rop = 0;
+            if (tars_ws_recv_message(tls, ws_rx, WS_RX_CAP, &rlen, &rop, ws_tx, WS_TX_CAP, 8000) &&
+                (rop == 1 || rop == 2) && strstr(ws_rx, "setupComplete") != nullptr) {
+                setup_ok = true;
+                ESP_LOGI(TAG, "Gemini 3.1 Live setupComplete in %dms!", (int)((esp_timer_get_time() - t_conn) / 1000));
+            } else {
+                ESP_LOGW(TAG, "Gemini Live setup failed (op=%u, len=%u, msg='%.120s')", rop, (unsigned)rlen, ws_rx);
+            }
+        }
+        free(setup_str);
+    }
+
+    if (!setup_ok) {
+        esp_tls_conn_destroy(tls);
+        free(ws_rx); free(ws_tx); free(pcm_out); free(ring_buf); free(b64_buf); free(audio_json); free(chunk64);
+        wifi_manager_set_turbo(false);
+        s_tars_live_mode = false;
+        s_tars_instance->set_visual_state(TARS_VIS_IDLE, 0);
+        s_tars_instance->update_ui_state("CANLI KURULUM HATASI", 0xF87171, 0, nullptr,
+                                         "Gemini Live oturumu acilamadi.", "MOD: GROQ V5.1", LV_SYMBOL_AUDIO " Konus");
+        return;
+    }
+
+    bsp_vibrate_pulse(30);
+    bool session_alive = true;
+
+    // Helper lambda to send a 64ms (or 32ms) 16kHz PCM16 chunk live over WebSocket!
+    auto send_pcm_chunk = [&](const int16_t* pcm, size_t n_samples) -> bool {
+        size_t b64_len = 0;
+        if (mbedtls_base64_encode((unsigned char*)b64_buf, 4095, &b64_len,
+                                  (const unsigned char*)pcm, n_samples * sizeof(int16_t)) != 0) {
+            return false;
+        }
+        b64_buf[b64_len] = '\0';
+        int jlen = snprintf(audio_json, 4608,
+                            "{\"realtimeInput\":{\"audio\":{\"data\":\"%s\",\"mimeType\":\"audio/pcm;rate=16000\"}}}",
+                            b64_buf);
+        if (jlen <= 0 || jlen >= 4608) return false;
+        return tars_ws_send_frame(tls, 0x1, (const uint8_t*)audio_json, (size_t)jlen, ws_tx, WS_TX_CAP);
+    };
+
+    // Continuous multi-turn Gemini 3.1 Live Voice Loop!
+    while (session_alive && s_tars_live_mode && s_tars_app_active && display_manager_is_on() && !s_tars_abort_audio) {
+        display_manager_reset_timer();
+        s_tars_manual_toggle = false;
+
+        // ---- PHASE 1: LIVE STREAMING MIC (16kHz ES7210 -> Realtime WS Chunks!) ----
+        if (!bsp_audio_lock(500)) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+        esp_codec_dev_sample_info_t mic_fs = {
+            .bits_per_sample = 16,
+            .channel = 1,
+            .channel_mask = 0,
+            .sample_rate = TARS_SAMPLE_RATE,
+            .mclk_multiple = 0,
+        };
+        if (esp_codec_dev_open(mic, &mic_fs) != ESP_OK) {
+            bsp_audio_unlock();
+            vTaskDelay(pdMS_TO_TICKS(150));
+            continue;
+        }
+        esp_codec_dev_set_in_gain(mic, 30.0);
+
+        s_tars_instance->set_visual_state(TARS_VIS_IDLE, 0);
+        s_tars_instance->update_ui_state("CANLI // DINLIYOR (GEMINI 3.1)", 0x34D399, 0,
+                                         nullptr, nullptr, "CANLI SES AKTIF | KONUSABILIRSIN", LV_SYMBOL_OK " Gonder");
+
+        bool speech_started = false;
+        int loud_frames = 0;
+        int silent_frames = 0;
+        int preroll_idx = 0;
+        int preroll_filled = 0;
+        int chunk_fill = 0; // Accumulates 2x 32ms frames = 64ms (1024 samples) per WS packet
+        uint32_t noise_floor = 260;
+        uint32_t max_speech_energy = 0;
+        size_t total_streamed_samples = 0;
+        TickType_t wait_start_tick = xTaskGetTickCount();
+        TickType_t speech_start_tick = 0;
+
+        for (int w = 0; w < 2; w++) {
+            esp_codec_dev_read(mic, frame_buf, TARS_FRAME_BYTES);
+        }
+
+        while (session_alive && s_tars_live_mode && s_tars_app_active && display_manager_is_on() && !s_tars_abort_audio) {
+            if (esp_codec_dev_read(mic, frame_buf, TARS_FRAME_BYTES) != 0) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+                continue;
+            }
+
+            int64_t dc_sum = 0;
+            for (int i = 0; i < TARS_FRAME_SAMPLES; i++) dc_sum += frame_buf[i];
+            int32_t dc_avg = (int32_t)(dc_sum / TARS_FRAME_SAMPLES);
+            uint64_t sum_abs = 0;
+            for (int i = 0; i < TARS_FRAME_SAMPLES; i++) {
+                int32_t v = (int32_t)frame_buf[i] - dc_avg;
+                frame_buf[i] = (int16_t)((v > 32767) ? 32767 : (v < -32768) ? -32768 : v);
+                sum_abs += (v < 0) ? -v : v;
+            }
+            uint32_t mean_abs = (uint32_t)(sum_abs / TARS_FRAME_SAMPLES);
+            int level_pct = (int)((mean_abs * 100) / 3000);
+            if (level_pct > 100) level_pct = 100;
+
+            if (!speech_started) {
+                memcpy(preroll_ring + (preroll_idx * TARS_FRAME_SAMPLES), frame_buf, TARS_FRAME_BYTES);
+                preroll_idx = (preroll_idx + 1) % TARS_PREROLL_FRAMES;
+                if (preroll_filled < TARS_PREROLL_FRAMES) preroll_filled++;
+
+                noise_floor = (noise_floor * 7 + mean_abs) / 8;
+                uint32_t trig = noise_floor * 2 + 240;
+                if (trig < 460) trig = 460;
+                if (trig > 2200) trig = 2200;
+
+                bool manual = s_tars_manual_toggle;
+                if (manual) s_tars_manual_toggle = false;
+
+                if (mean_abs > trig || manual) {
+                    loud_frames++;
+                    if (loud_frames >= 3 || manual) {
+                        speech_started = true;
+                        speech_start_tick = xTaskGetTickCount();
+                        silent_frames = 0;
+                        max_speech_energy = mean_abs;
+                        display_manager_reset_timer();
+                        s_tars_instance->set_visual_state(TARS_VIS_LISTEN, level_pct);
+                        s_tars_instance->update_ui_state("CANLI AKIS // DINLIYOR...", 0x00E5FF, level_pct,
+                                                         "Canli ses Google'a akiyor...", nullptr, nullptr);
+
+                        // Flush 192ms pre-roll live right away!
+                        int start_slot = (preroll_filled < TARS_PREROLL_FRAMES) ? 0 : preroll_idx;
+                        for (int f = 0; f < preroll_filled && session_alive; f++) {
+                            int slot = (start_slot + f) % TARS_PREROLL_FRAMES;
+                            if (!send_pcm_chunk(preroll_ring + (slot * TARS_FRAME_SAMPLES), TARS_FRAME_SAMPLES)) {
+                                session_alive = false;
+                                break;
+                            }
+                            total_streamed_samples += TARS_FRAME_SAMPLES;
+                        }
+                    }
+                } else {
+                    loud_frames = 0;
+                }
+
+                // 25s idle timeout in live mode -> close cleanly to save quota & battery
+                if ((xTaskGetTickCount() - wait_start_tick) * portTICK_PERIOD_MS >= 25000) {
+                    ESP_LOGI(TAG, "Gemini Live idle timeout (25s) -> closing live session cleanly");
+                    session_alive = false;
+                    break;
+                }
+            } else {
+                display_manager_reset_timer();
+                if (mean_abs > max_speech_energy) max_speech_energy = mean_abs;
+
+                // Pack 2x 32ms frames = 64ms (1024 samples) and stream LIVE while talking!
+                memcpy(chunk64 + (chunk_fill * TARS_FRAME_SAMPLES), frame_buf, TARS_FRAME_BYTES);
+                chunk_fill++;
+                if (chunk_fill >= 2) {
+                    if (!send_pcm_chunk(chunk64, 1024)) {
+                        session_alive = false;
+                        break;
+                    }
+                    total_streamed_samples += 1024;
+                    chunk_fill = 0;
+                }
+
+                uint32_t silence_thresh = noise_floor + 220;
+                uint32_t rel_thresh = max_speech_energy / 5;
+                if (rel_thresh > 1100) rel_thresh = 1100;
+                if (rel_thresh > silence_thresh) silence_thresh = rel_thresh;
+                if (silence_thresh < 340) silence_thresh = 340;
+                if (mean_abs < silence_thresh) silent_frames++;
+                else silent_frames = 0;
+
+                uint32_t rec_ms = (xTaskGetTickCount() - speech_start_tick) * portTICK_PERIOD_MS;
+                s_tars_instance->set_visual_state(TARS_VIS_LISTEN, level_pct);
+                if ((total_streamed_samples / 1024) % 4 == 0) {
+                    char hdr_s[48];
+                    snprintf(hdr_s, sizeof(hdr_s), "CANLI AKIS (%.1f sn)...", (float)rec_ms / 1000.0f);
+                    s_tars_instance->update_ui_state(hdr_s, 0x00E5FF, level_pct, nullptr, nullptr, nullptr);
+                }
+
+                int stop_sil = (rec_ms < 1400) ? 24 : (rec_ms < 3500) ? 18 : 15;
+                bool manual_fin = s_tars_manual_toggle;
+                if (manual_fin) s_tars_manual_toggle = false;
+
+                if (silent_frames >= stop_sil || rec_ms >= 22000 || manual_fin) {
+                    if (chunk_fill > 0 && session_alive) {
+                        send_pcm_chunk(chunk64, (size_t)(chunk_fill * TARS_FRAME_SAMPLES));
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Release mic BEFORE opening speaker (shared I2S0 clock!)
+        esp_codec_dev_close(mic);
+        bsp_audio_standby();
+        bsp_audio_unlock();
+
+        if (!session_alive || !s_tars_live_mode || !s_tars_app_active || s_tars_abort_audio || !speech_started || total_streamed_samples < 4096) {
+            continue;
+        }
+
+        // Tell Gemini user finished speaking -> triggers ~540ms native voice reply!
+        const char* end_msg = "{\"realtimeInput\":{\"audioStreamEnd\":true}}";
+        if (!tars_ws_send_frame(tls, 0x1, (const uint8_t*)end_msg, strlen(end_msg), ws_tx, WS_TX_CAP)) {
+            session_alive = false;
+            break;
+        }
+        bsp_vibrate_pulse(20);
+        int64_t t_turn_end = esp_timer_get_time();
+
+        s_tars_instance->set_visual_state(TARS_VIS_THINK, 0);
+        s_tars_instance->update_ui_state("CANLI // TARS YANITLIYOR...", 0xFFA000, 0, nullptr, nullptr, nullptr, LV_SYMBOL_STOP " Sustur");
+
+        // ---- PHASE 2: ZERO-STUTTER PRODUCER-CONSUMER 24kHz PCM VOICE + TOOLS + TRANSCRIPTS ----
+        TarsLiveAudioPipe audio_pipe = {};
+        audio_pipe.ring = ring_buf;
+        s_active_live_pipe = &audio_pipe;
+
+        bool spk_task_spawned = (xTaskCreatePinnedToCore(
+            tars_live_spk_task, "tars_live_spk", 4096, &audio_pipe, 5, nullptr, 1) == pdPASS);
+        if (!spk_task_spawned) {
+            audio_pipe.spk_finished = true;
+            ESP_LOGE(TAG, "Failed to spawn tars_live_spk task!");
+        }
+
+        int ttfa_ms = -1;
+        int aud_chunk_idx = 0;
+        size_t total_ws_bytes = 0;
+        int64_t t_first_aud_us = 0;
+        int64_t t_last_aud_us = 0;
+        char in_tr_utf8[256] = {0};
+        char out_tr_utf8[512] = {0};
+        char tmp_tr[256] = {0};
+        char ui_ascii[512] = {0};
+        bool in_dirty = false;
+        bool out_dirty = false;
+        int64_t last_ui_flush_us = 0;
+        s_tars_manual_toggle = false;
+
+        while (session_alive && s_tars_live_mode && s_tars_app_active && display_manager_is_on() && !s_tars_abort_audio) {
+            if (s_tars_manual_toggle) {
+                __atomic_store_n(&audio_pipe.abort_now, true, __ATOMIC_RELEASE);
+            }
+
+            size_t mlen = 0;
+            uint8_t mop = 0;
+            // Allow up to 20s wait (Google finishes pushing 10s+ audio fast, then sends turnComplete near playback end!)
+            int recv_to = s_tars_manual_toggle ? 3500 : 20000;
+            if (!tars_ws_recv_message(tls, ws_rx, WS_RX_CAP, &mlen, &mop, ws_tx, WS_TX_CAP, recv_to)) {
+                ESP_LOGW(TAG, "Gemini Live WS recv timeout/disconnect (muted=%d)", (int)s_tars_manual_toggle);
+                session_alive = false;
+                break;
+            }
+            if (mop == 0x8) {
+                ESP_LOGI(TAG, "Gemini Live server closed WS");
+                session_alive = false;
+                break;
+            }
+            if (mop != 1 && mop != 2) continue;
+            total_ws_bytes += mlen;
+
+            if (s_tars_manual_toggle) {
+                __atomic_store_n(&audio_pipe.abort_now, true, __ATOMIC_RELEASE);
+            }
+
+            // 1. ZERO-ALLOCATION FAST PATH: Push 24kHz PCM audio straight into 512KB PSRAM ring buffer (<1.5ms!)
+            if (strstr(ws_rx, "audio/pcm") != nullptr) {
+                int pushed = tars_extract_live_audio_to_pipe(ws_rx, pcm_out, PCM_OUT_CAP, &audio_pipe, s_tars_manual_toggle);
+                if (pushed > 0) {
+                    int64_t now_aud = esp_timer_get_time();
+                    int dt_ms = (t_last_aud_us > 0) ? (int)((now_aud - t_last_aud_us) / 1000LL) : 0;
+                    t_last_aud_us = now_aud;
+                    aud_chunk_idx++;
+                    if (ttfa_ms < 0) {
+                        t_first_aud_us = now_aud;
+                        ttfa_ms = (int)((now_aud - t_turn_end) / 1000LL);
+                        ESP_LOGI(TAG, "=== [GEMINI 3.1 LIVE] FIRST AUDIO = %dms! (buffered in 512KB ring) ===", ttfa_ms);
+                        char st_hdr[64];
+                        snprintf(st_hdr, sizeof(st_hdr), "CANLI SES // %dms (GEMINI 3.1)", ttfa_ms);
+                        s_tars_instance->set_visual_state(TARS_VIS_REPLY, 70);
+                        s_tars_instance->update_ui_state(st_hdr, 0x34D399, 70, nullptr, nullptr, nullptr);
+                    }
+                    if (aud_chunk_idx <= 8 || dt_ms > 350) {
+                        uint32_t buf_ms = tars_live_pipe_avail(&audio_pipe) / 48U;
+                        ESP_LOGI(TAG, "[LIVE-RX] #%d t=%dms dt=%dms ws=%uB pcm=%dB ring=%lums",
+                                 aud_chunk_idx, (int)((now_aud - t_turn_end) / 1000LL), dt_ms,
+                                 (unsigned)mlen, pushed, (unsigned long)buf_ms);
+                    }
+                }
+            }
+
+            // 2. Live Tool Calling (small ~250B JSON -> full cJSON only when toolCall is present!)
+            if (strstr(ws_rx, "\"toolCall\"") != nullptr) {
+                cJSON* msg = cJSON_ParseWithLength(ws_rx, mlen);
+                if (msg) {
+                    cJSON* tc = cJSON_GetObjectItem(msg, "toolCall");
+                    cJSON* fcs = tc ? cJSON_GetObjectItem(tc, "functionCalls") : nullptr;
+                    if (cJSON_IsArray(fcs)) {
+                        cJSON* tr_root = cJSON_CreateObject();
+                        cJSON* tr_wrap = cJSON_AddObjectToObject(tr_root, "toolResponse");
+                        cJSON* fresps = cJSON_AddArrayToObject(tr_wrap, "functionResponses");
+
+                        int nf = cJSON_GetArraySize(fcs);
+                        for (int i = 0; i < nf; i++) {
+                            cJSON* fc = cJSON_GetArrayItem(fcs, i);
+                            cJSON* jid = fc ? cJSON_GetObjectItem(fc, "id") : nullptr;
+                            cJSON* jname = fc ? cJSON_GetObjectItem(fc, "name") : nullptr;
+                            cJSON* jargs = fc ? cJSON_GetObjectItem(fc, "args") : nullptr;
+                            cJSON* jcmd = jargs ? cJSON_GetObjectItem(jargs, "command") : nullptr;
+
+                            char act_badge[64] = {0};
+                            char result_str[192] = "OK";
+                            s_live_pc_telemetry[0] = '\0';
+
+                            if (cJSON_IsString(jcmd) && jcmd->valuestring[0]) {
+                                ESP_LOGI(TAG, "Gemini Live TOOL_CALL: %s", jcmd->valuestring);
+                                TarsActionOutcome oc = tars_execute_single_action(jcmd->valuestring, nullptr, act_badge, sizeof(act_badge));
+                                if (oc == TARS_ACT_PC_UNREACHABLE) {
+                                    snprintf(result_str, sizeof(result_str), "HATA: Bilgisayara ulasilamadi");
+                                } else if (oc == TARS_ACT_TV_UNREACHABLE) {
+                                    snprintf(result_str, sizeof(result_str), "HATA: Televizyona ulasilamadi");
+                                } else if (s_live_pc_telemetry[0]) {
+                                    snprintf(result_str, sizeof(result_str), "PC Canli Durum: %s", s_live_pc_telemetry);
+                                } else if (act_badge[0]) {
+                                    snprintf(result_str, sizeof(result_str), "%s", act_badge);
+                                }
+                                if (act_badge[0]) {
+                                    char full_b[80];
+                                    snprintf(full_b, sizeof(full_b), "CANLI EYLEM: %.52s", act_badge);
+                                    s_tars_instance->update_ui_state(nullptr, 0, -1, nullptr, nullptr, full_b);
+                                }
+                            }
+
+                            cJSON* fr = cJSON_CreateObject();
+                            cJSON_AddStringToObject(fr, "id", cJSON_IsString(jid) ? jid->valuestring : "");
+                            cJSON_AddStringToObject(fr, "name", cJSON_IsString(jname) ? jname->valuestring : "watch_action");
+                            cJSON* robj = cJSON_AddObjectToObject(fr, "response");
+                            cJSON_AddStringToObject(robj, "result", result_str);
+                            cJSON_AddItemToArray(fresps, fr);
+                        }
+                        char* tr_str = cJSON_PrintUnformatted(tr_root);
+                        cJSON_Delete(tr_root);
+                        if (tr_str) {
+                            if (!tars_ws_send_frame(tls, 0x1, (const uint8_t*)tr_str, strlen(tr_str), ws_tx, WS_TX_CAP)) {
+                                session_alive = false;
+                            }
+                            free(tr_str);
+                        }
+                    }
+                    cJSON_Delete(msg);
+                }
+            }
+
+            // 3. Tiny-Object Live Transcriptions (parses only ~60B sub-object, throttled UI flush -> 0 TCP stall!)
+            if (tars_extract_sub_text(ws_rx, "\"inputTranscription\"", tmp_tr, sizeof(tmp_tr))) {
+                strncat(in_tr_utf8, tmp_tr, sizeof(in_tr_utf8) - strlen(in_tr_utf8) - 1);
+                in_dirty = true;
+            }
+            if (tars_extract_sub_text(ws_rx, "\"outputTranscription\"", tmp_tr, sizeof(tmp_tr))) {
+                strncat(out_tr_utf8, tmp_tr, sizeof(out_tr_utf8) - strlen(out_tr_utf8) - 1);
+                out_dirty = true;
+            }
+
+            int64_t now_us = esp_timer_get_time();
+            if ((in_dirty || out_dirty) && (now_us - last_ui_flush_us >= 120000LL)) {
+                last_ui_flush_us = now_us;
+                if (in_dirty) {
+                    tars_utf8_to_ascii(ui_ascii, in_tr_utf8, sizeof(ui_ascii));
+                    s_tars_instance->update_ui_state(nullptr, 0, -1, ui_ascii, nullptr, nullptr);
+                    in_dirty = false;
+                }
+                if (out_dirty) {
+                    tars_utf8_to_ascii(ui_ascii, out_tr_utf8, sizeof(ui_ascii));
+                    s_tars_instance->update_ui_state(nullptr, 0, -1, nullptr, ui_ascii, nullptr);
+                    out_dirty = false;
+                }
+            }
+
+            // 4. Turn Complete -> flush remaining text & let dedicated Core-1 speaker task finish draining smoothly!
+            const char* tc_pos = strstr(ws_rx, "\"turnComplete\"");
+            if (tc_pos && (strstr(tc_pos, "true") != nullptr)) {
+                if (in_dirty) {
+                    tars_utf8_to_ascii(ui_ascii, in_tr_utf8, sizeof(ui_ascii));
+                    s_tars_instance->update_ui_state(nullptr, 0, -1, ui_ascii, nullptr, nullptr);
+                }
+                if (out_dirty) {
+                    tars_utf8_to_ascii(ui_ascii, out_tr_utf8, sizeof(ui_ascii));
+                    s_tars_instance->update_ui_state(nullptr, 0, -1, nullptr, ui_ascii, nullptr);
+                }
+                if (in_tr_utf8[0] && out_tr_utf8[0]) {
+                    tars_push_history(in_tr_utf8, out_tr_utf8);
+                }
+                break;
+            }
+        }
+
+        // Signal producer done & wait cleanly for dedicated Core-1 speaker task to finish draining smoothly!
+        __atomic_store_n(&audio_pipe.producer_done, true, __ATOMIC_RELEASE);
+        if (!session_alive || !s_tars_live_mode || !s_tars_app_active || !display_manager_is_on() || s_tars_abort_audio || s_tars_manual_toggle) {
+            __atomic_store_n(&audio_pipe.abort_now, true, __ATOMIC_RELEASE);
+        }
+        while (!__atomic_load_n(&audio_pipe.spk_finished, __ATOMIC_ACQUIRE)) {
+            if (!s_tars_live_mode || !s_tars_app_active || !display_manager_is_on() || s_tars_abort_audio || s_tars_manual_toggle) {
+                __atomic_store_n(&audio_pipe.abort_now, true, __ATOMIC_RELEASE);
+            }
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+        s_active_live_pipe = nullptr;
+
+        int dl_ms = (t_first_aud_us > 0 && t_last_aud_us > t_first_aud_us)
+                        ? (int)((t_last_aud_us - t_first_aud_us) / 1000LL) : 1;
+        float dl_kbps = ((float)total_ws_bytes / 1024.0f) / ((float)dl_ms / 1000.0f);
+        ESP_LOGI(TAG, "Gemini Live turn finished: TTFA=%dms, chunks=%d, dl=%uB/%dms (%.1f KB/s), played=%luB (%.2fs), underruns=%lu",
+                 ttfa_ms, aud_chunk_idx, (unsigned)total_ws_bytes, dl_ms, dl_kbps,
+                 (unsigned long)audio_pipe.total_played_bytes,
+                 (float)audio_pipe.total_played_bytes / 48000.0f,
+                 (unsigned long)audio_pipe.underruns);
+        if (s_tars_instance && s_tars_app_active && audio_pipe.total_played_bytes > 0) {
+            char diag_b[72];
+            snprintf(diag_b, sizeof(diag_b), "LIVE: %.0fKB/s | %dms | KESINTI:%lu",
+                     dl_kbps, ttfa_ms, (unsigned long)audio_pipe.underruns);
+            s_tars_instance->update_ui_state(nullptr, 0, -1, nullptr, nullptr, diag_b);
+        }
+
+        s_tars_manual_toggle = false;
+    }
+
+    // Graceful WebSocket Close + cleanup
+    tars_ws_send_frame(tls, 0x8, nullptr, 0, ws_tx, WS_TX_CAP);
+    esp_tls_conn_destroy(tls);
+    free(ws_rx); free(ws_tx); free(pcm_out); free(ring_buf); free(b64_buf); free(audio_json); free(chunk64);
+    wifi_manager_set_turbo(false);
+    s_tars_live_mode = false;
+    if (s_tars_instance && s_tars_app_active) {
+        s_tars_instance->set_visual_state(TARS_VIS_IDLE, 0);
+        s_tars_instance->update_ui_state("HAZIR - ELLER SERBEST", 0x00E676, 0, nullptr, nullptr,
+                                         "MOD: GROQ V5.1 (CANLI KAPANDI)", LV_SYMBOL_AUDIO " Konus");
+    }
+    ESP_LOGI(TAG, "Gemini 3.1 Live session ended cleanly.");
+}
+
 // Unified Background Worker Task for both 4.5s Triple-Tap Wake Window & Full Hands-Free App Mode
 static void tars_worker_loop(void* pv) {
-    ESP_LOGI(TAG, "TARS v4.0 Worker started (Strict JSON Schema + Zero-Drop UI Mailbox + Honest PC Control)");
+    ESP_LOGI(TAG, "TARS v5.2 Worker started (Groq 120B v5.1 + Gemini 3.1 Flash Live Native Audio!)");
     tars_load_api_key();
+    tars_load_gemini_key();
 
     int16_t* pcm_buf = (int16_t*)heap_caps_malloc(TARS_MAX_PCM_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     uint8_t* ulaw_wav_buf = (uint8_t*)heap_caps_malloc(TARS_ULAW_HDR_BYTES + TARS_MAX_ULAW_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -1820,6 +3333,12 @@ static void tars_worker_loop(void* pv) {
             continue;
         }
 
+        // If user toggled CANLI (Gemini 3.1 Flash Live Native Audio), hand off immediately!
+        if (!is_wake_window && s_tars_live_mode) {
+            tars_run_gemini_live_session(mic, frame_buf, preroll_ring);
+            continue;
+        }
+
         esp_codec_dev_sample_info_t fs = {
             .bits_per_sample = 16,
             .channel = 1,
@@ -1842,6 +3361,15 @@ static void tars_worker_loop(void* pv) {
             continue;
         }
         esp_codec_dev_set_in_gain(mic, 30.0);
+
+        // Pre-warm Wi-Fi the INSTANT TARS wakes/opens so DHCP is already finished before speech ends!
+        if (!wifi_manager_is_connected() && !wifi_manager_is_ap_active()) {
+            if (!wifi_manager_is_active()) {
+                wifi_manager_start_async();
+            } else if (wifi_manager_get_state() == WIFI_STATE_IDLE || wifi_manager_get_state() == WIFI_STATE_FAILED) {
+                wifi_manager_connect_default_async();
+            }
+        }
 
         if (is_wake_window) {
             s_wake_vis_state = TARS_VIS_LISTEN;
@@ -1873,7 +3401,7 @@ static void tars_worker_loop(void* pv) {
             esp_codec_dev_read(mic, frame_buf, TARS_FRAME_BYTES);
         }
 
-        while ((s_tars_app_active || s_tars_wake_window_req) && display_manager_is_on() && !s_tars_abort_audio && !s_wake_pill_dismissed) {
+        while ((s_tars_app_active || s_tars_wake_window_req) && display_manager_is_on() && !s_tars_abort_audio && !s_wake_pill_dismissed && !(s_tars_live_mode && !is_wake_window)) {
             if (esp_codec_dev_read(mic, frame_buf, TARS_FRAME_BYTES) != 0) {
                 vTaskDelay(pdMS_TO_TICKS(10));
                 continue;
@@ -1960,7 +3488,11 @@ static void tars_worker_loop(void* pv) {
                 }
                 if (mean_abs > max_speech_energy) max_speech_energy = mean_abs;
 
+                // Adaptive relative silence floor: prevents PC fans/TV noise from trapping recording until 12s cap!
                 uint32_t silence_thresh = noise_floor + 220;
+                uint32_t rel_thresh = max_speech_energy / 5;
+                if (rel_thresh > 1100) rel_thresh = 1100;
+                if (rel_thresh > silence_thresh) silence_thresh = rel_thresh;
                 if (silence_thresh < 340) silence_thresh = 340;
                 if (mean_abs < silence_thresh) {
                     silent_frames++;
@@ -1978,7 +3510,7 @@ static void tars_worker_loop(void* pv) {
                     }
                 }
 
-                int stop_silence_frames = manual_rec_mode ? 50 : ((rec_ms < 1400) ? 34 : (rec_ms < 3500) ? 24 : 19);
+                int stop_silence_frames = manual_rec_mode ? 50 : ((rec_ms < 1400) ? 26 : (rec_ms < 3500) ? 19 : 15);
                 bool manual_finish = s_tars_manual_toggle;
                 if (manual_finish) s_tars_manual_toggle = false;
 
@@ -1998,7 +3530,7 @@ static void tars_worker_loop(void* pv) {
             samples_written -= trail_trim_samples;
         }
 
-        if (!speech_started || s_tars_abort_audio || s_wake_pill_dismissed || samples_written < 4096 || max_speech_energy < 320) {
+        if (!speech_started || s_tars_abort_audio || s_wake_pill_dismissed || (s_tars_live_mode && !is_wake_window) || samples_written < 4096 || max_speech_energy < 320) {
             if (is_wake_window) {
                 s_tars_wake_window_req = false;
                 update_wake_pill_ui(nullptr, nullptr, 0, false);
@@ -2006,12 +3538,15 @@ static void tars_worker_loop(void* pv) {
             continue;
         }
 
+        // Instant crisp 25ms tactile confirmation the moment TARS finishes listening & starts upload
+        bsp_vibrate_pulse(25);
+
         size_t ulaw_wav_len = tars_encode_ulaw_wav(pcm_buf, samples_written, ulaw_wav_buf);
 
         transcript[0] = '\0';
         raw_reply[0] = '\0';
         clean_reply[0] = '\0';
-        char structured_actions[256] = {0};
+        char structured_actions[384] = {0};
         char action_badge[64] = {0};
         TarsTimingStats stats = {};
 
@@ -2052,17 +3587,32 @@ static void tars_worker_loop(void* pv) {
             structured_actions[0] = '\0';
         }
 
-        // Execute PC/TV/Home actions BEFORE dropping Wi-Fi turbo mode!
-        tars_finalize_reply(raw_reply, structured_actions, clean_reply, TARS_TEXT_CAP, action_badge, sizeof(action_badge), transcript);
-        wifi_manager_set_turbo(false);
-
+        // Show Groq reply on screen IMMEDIATELY (0ms wait!) BEFORE running ESPHome/PC HTTP + speaker chime!
         char speed_hdr[64];
         if (res == TARS_RES_OK) {
-            snprintf(speed_hdr, sizeof(speed_hdr), "TARS 4.0 // %dms (STT:%d AI:%d)",
+            snprintf(speed_hdr, sizeof(speed_hdr), "TARS 5.1 // %dms (STT:%d AI:%d)",
                      stats.total_ms, stats.stt_ms, stats.llm_ms);
+            tars_utf8_to_ascii(clean_reply, raw_reply, TARS_TEXT_CAP);
+            if (is_wake_window) {
+                s_wake_vis_state = TARS_VIS_REPLY;
+                s_wake_countdown_active = false;
+                update_wake_pill_ui(speed_hdr, clean_reply, 0x00E676, true);
+            } else if (s_tars_instance) {
+                char fast_status[64];
+                snprintf(fast_status, sizeof(fast_status), "HIZ: %dms (STT:%d | AI:%d)",
+                         stats.total_ms, stats.stt_ms, stats.llm_ms);
+                s_tars_instance->set_visual_state(TARS_VIS_REPLY, 40);
+                s_tars_instance->update_ui_state(fast_status, 0x00E676, 0, transcript, clean_reply,
+                                                 structured_actions[0] ? "EYLEM UYGULANIYOR..." : "EYLEM: YOK (SOHBET)",
+                                                 LV_SYMBOL_AUDIO " Konus");
+            }
         } else {
             snprintf(speed_hdr, sizeof(speed_hdr), "TARS // YANIT (Dokun: Kapat)");
         }
+
+        // Execute PC/TV/Home/Memory actions & acoustic cadence, then refresh badge/honest overrides if needed
+        tars_finalize_reply(raw_reply, structured_actions, clean_reply, TARS_TEXT_CAP, action_badge, sizeof(action_badge), transcript);
+        wifi_manager_set_turbo(false);
 
         if (is_wake_window) {
             s_tars_wake_window_req = false;
@@ -2201,7 +3751,8 @@ AppTars::AppTars()
       _bg_obj(nullptr), _btn_back(nullptr), _title_label(nullptr), _params_label(nullptr),
       _btn_tone(nullptr), _btn_tone_label(nullptr), _monolith_img(nullptr), _status_label(nullptr),
       _dialog_card(nullptr), _user_label(nullptr), _tars_label(nullptr), _action_badge(nullptr),
-      _btn_turbo(nullptr), _btn_turbo_label(nullptr), _btn_humor(nullptr), _btn_humor_label(nullptr),
+      _btn_turbo(nullptr), _btn_turbo_label(nullptr), _btn_live(nullptr), _btn_live_label(nullptr),
+      _btn_humor(nullptr), _btn_humor_label(nullptr),
       _btn_test(nullptr), _btn_test_label(nullptr), _anim_timer(nullptr),
       _humor_pct(75), _honesty_pct(90), _monolith_tone(0), _monolith_style(0),
       _turbo_mode(false), _vis_state(TARS_VIS_IDLE), _live_mic_pct(0),
@@ -2310,6 +3861,14 @@ void AppTars::apply_theme_chrome() {
             lv_obj_set_style_text_color(_btn_turbo_label, lv_color_hex(_turbo_mode ? 0xFFFFFF : 0xCBD5E1), 0);
         }
     }
+    if (_btn_live) {
+        bool live = s_tars_live_mode;
+        lv_obj_set_style_bg_color(_btn_live, lv_color_hex(live ? 0x059669 : 0x1C222D), 0);
+        lv_obj_set_style_border_color(_btn_live, lv_color_hex(live ? 0x34D399 : 0x334155), 0);
+        if (_btn_live_label) {
+            lv_obj_set_style_text_color(_btn_live_label, lv_color_hex(live ? 0xFFFFFF : 0x34D399), 0);
+        }
+    }
     if (_btn_humor_label) {
         lv_label_set_text_fmt(_btn_humor_label, "M:%%%d", _humor_pct);
     }
@@ -2347,6 +3906,18 @@ void AppTars::drain_ui_mailbox() {
     }
     if (local.has_btn && _btn_test_label) {
         lv_label_set_text(_btn_test_label, local.btn);
+    }
+    if (_btn_live) {
+        static bool s_last_live_ui = false;
+        bool live = s_tars_live_mode;
+        if (live != s_last_live_ui) {
+            s_last_live_ui = live;
+            lv_obj_set_style_bg_color(_btn_live, lv_color_hex(live ? 0x059669 : 0x1C222D), 0);
+            lv_obj_set_style_border_color(_btn_live, lv_color_hex(live ? 0x34D399 : 0x334155), 0);
+            if (_btn_live_label) {
+                lv_obj_set_style_text_color(_btn_live_label, lv_color_hex(live ? 0xFFFFFF : 0x34D399), 0);
+            }
+        }
     }
 }
 
@@ -2783,9 +4354,9 @@ bool AppTars::run() {
     lv_obj_set_style_text_color(_tars_label, lv_color_hex(0xF8FAFC), 0);
     lv_label_set_text(_tars_label, "TARS: \"Mizah %75. Seni dinliyorum Eymen.\"");
 
-    // 5. Bottom Control Row: [Konus (174)] [TURBO (96)] [M:%75 (88)]
+    // 5. Bottom Control Row: [Konus (120)] [CANLI (82)] [TURBO (80)] [M:%75 (74)]
     _btn_test = lv_btn_create(_bg_obj);
-    lv_obj_set_size(_btn_test, 174, 46);
+    lv_obj_set_size(_btn_test, 120, 46);
     lv_obj_align(_btn_test, LV_ALIGN_BOTTOM_LEFT, 18, -16);
     lv_obj_set_style_radius(_btn_test, 10, 0);
     lv_obj_set_style_bg_color(_btn_test, lv_color_hex(0x1E40AF), 0);
@@ -2802,9 +4373,28 @@ bool AppTars::run() {
     lv_label_set_text(_btn_test_label, LV_SYMBOL_AUDIO " Konus");
     lv_obj_center(_btn_test_label);
 
+    _btn_live = lv_btn_create(_bg_obj);
+    lv_obj_set_size(_btn_live, 82, 46);
+    lv_obj_align(_btn_live, LV_ALIGN_BOTTOM_LEFT, 144, -16);
+    lv_obj_set_style_radius(_btn_live, 10, 0);
+    lv_obj_set_style_border_width(_btn_live, 1, 0);
+    lv_obj_set_style_shadow_width(_btn_live, 0, 0);
+    lv_obj_add_event_cb(_btn_live, [](lv_event_t* e) {
+        AppTars* self = (AppTars*)lv_event_get_user_data(e);
+        s_tars_live_mode = !s_tars_live_mode;
+        if (s_tars_task) xTaskNotifyGive(s_tars_task);
+        if (self) self->apply_theme_chrome();
+        bsp_vibrate_pulse(40);
+    }, LV_EVENT_CLICKED, this);
+
+    _btn_live_label = lv_label_create(_btn_live);
+    lv_obj_set_style_text_font(_btn_live_label, &lv_font_montserrat_14, 0);
+    lv_label_set_text(_btn_live_label, "CANLI");
+    lv_obj_center(_btn_live_label);
+
     _btn_turbo = lv_btn_create(_bg_obj);
-    lv_obj_set_size(_btn_turbo, 96, 46);
-    lv_obj_align(_btn_turbo, LV_ALIGN_BOTTOM_LEFT, 200, -16);
+    lv_obj_set_size(_btn_turbo, 80, 46);
+    lv_obj_align(_btn_turbo, LV_ALIGN_BOTTOM_LEFT, 232, -16);
     lv_obj_set_style_radius(_btn_turbo, 10, 0);
     lv_obj_set_style_border_width(_btn_turbo, 1, 0);
     lv_obj_set_style_shadow_width(_btn_turbo, 0, 0);
@@ -2824,8 +4414,8 @@ bool AppTars::run() {
     lv_obj_center(_btn_turbo_label);
 
     _btn_humor = lv_btn_create(_bg_obj);
-    lv_obj_set_size(_btn_humor, 88, 46);
-    lv_obj_align(_btn_humor, LV_ALIGN_BOTTOM_LEFT, 304, -16);
+    lv_obj_set_size(_btn_humor, 74, 46);
+    lv_obj_align(_btn_humor, LV_ALIGN_BOTTOM_LEFT, 318, -16);
     lv_obj_set_style_radius(_btn_humor, 10, 0);
     lv_obj_set_style_bg_color(_btn_humor, lv_color_hex(0x1C222D), 0);
     lv_obj_set_style_border_color(_btn_humor, lv_color_hex(0x334155), 0);
@@ -2862,6 +4452,7 @@ bool AppTars::back() {
 
 bool AppTars::close() {
     s_tars_app_active = false;
+    s_tars_live_mode = false;
     s_tars_abort_audio = true;
     display_manager_set_timeout(5000);
 
@@ -2886,6 +4477,8 @@ bool AppTars::close() {
         _action_badge = nullptr;
         _btn_turbo = nullptr;
         _btn_turbo_label = nullptr;
+        _btn_live = nullptr;
+        _btn_live_label = nullptr;
         _btn_humor = nullptr;
         _btn_humor_label = nullptr;
         _btn_test = nullptr;

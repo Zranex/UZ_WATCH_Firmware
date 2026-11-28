@@ -62,6 +62,8 @@ private:
     lv_obj_t* _action_badge;
     lv_obj_t* _btn_turbo;
     lv_obj_t* _btn_turbo_label;
+    lv_obj_t* _btn_live;
+    lv_obj_t* _btn_live_label;
     lv_obj_t* _btn_humor;
     lv_obj_t* _btn_humor_label;
     lv_obj_t* _btn_test;

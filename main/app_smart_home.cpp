@@ -111,7 +111,7 @@ void AppSmartHome::update_wifi_ui() {
     if (connected) {
         char ip[32] = {0};
         wifi_manager_get_ip(ip);
-        lv_label_set_text(_wifi_status_label, LV_SYMBOL_WIFI " TurkTelekom");
+        lv_label_set_text(_wifi_status_label, LV_SYMBOL_WIFI " Ev Wi-Fi");
         lv_obj_set_style_text_color(_wifi_status_label, lv_color_hex(0x4CAF50), 0);
         lv_label_set_text_fmt(_wifi_ip_label, "PC: %s | Saat: %s", pc_control_get_cached_ip(), strlen(ip) > 0 ? ip : "OK");
         lv_obj_set_style_text_color(_wifi_ip_label, lv_color_hex(0xB0BEC5), 0);

@@ -35,6 +35,8 @@ public:
     bool is_turbo_mode() const { return _turbo_mode; }
     void cycle_tone();
     void cycle_style();
+    void cycle_voice();
+    const char* get_voice_name() const;
     void render_monolith_frame();
 
     bool is_open() const { return _bg_obj != nullptr; }
@@ -62,8 +64,8 @@ private:
     lv_obj_t* _action_badge;
     lv_obj_t* _btn_turbo;
     lv_obj_t* _btn_turbo_label;
-    lv_obj_t* _btn_live;
-    lv_obj_t* _btn_live_label;
+    lv_obj_t* _btn_voice;
+    lv_obj_t* _btn_voice_label;
     lv_obj_t* _btn_humor;
     lv_obj_t* _btn_humor_label;
     lv_obj_t* _btn_test;
@@ -74,6 +76,7 @@ private:
     int _honesty_pct;
     int _monolith_tone;   // 0=Beyaz, 1=Celik, 2=Amber, 3=Yesil
     int _monolith_style;  // 0=Saf TARS, 1=NASA Telemetri, 2=Asimetrik
+    int _voice_idx;       // 0=Charon, 1=Fenrir, 2=Orus, 3=Puck, 4=Aoede
     volatile bool _turbo_mode;
     volatile int _vis_state;
     volatile int _live_mic_pct;

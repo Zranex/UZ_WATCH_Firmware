@@ -8,6 +8,8 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include <math.h>
+#include <stdio.h>
+#include <string.h>
 #include <time.h>
 
 static const char *TAG = "pedometer_task";
@@ -15,6 +17,9 @@ static const char *TAG = "pedometer_task";
 #define PEDO_NVS_NS           "pedometer"
 #define PEDO_KEY_STEPS        "steps"
 #define PEDO_KEY_DAY          "day"
+#define PEDO_KEY_YSTEPS       "ysteps"
+#define PEDO_KEY_YDAY         "yday"
+#define PEDO_SD_LOG_PATH      "/sdcard/step_log.txt" // Strict 8.3 FATFS filename!
 #define PEDO_SAVE_STEP_DELTA  15       // Auto-commit every 15 new steps
 #define PEDO_SAVE_IDLE_US     (20LL * 1000000LL) // Or 20s after last unsaved step
 #define PEDO_DAY_CHECK_US     (60LL * 1000000LL) // Check midnight rollover every 60s
@@ -23,6 +28,8 @@ static const char *TAG = "pedometer_task";
 static volatile uint32_t step_count = 0;
 static volatile uint32_t s_last_saved_steps = 0;
 static volatile uint32_t s_saved_day = 0;
+static volatile uint32_t s_prev_day_steps = 0;
+static volatile uint32_t s_prev_day_ymd = 0;
 static volatile int64_t  s_last_save_us = 0;
 static volatile int64_t  s_last_step_us = 0;
 static qmi8658_acc_t s_latest_acc = {0};
@@ -55,6 +62,49 @@ static uint32_t pedometer_get_today_ymd(void)
     return 0;
 }
 
+static void pedometer_archive_day_to_sd(uint32_t day_ymd, uint32_t steps)
+{
+    if (day_ymd < 20240101) return;
+    // Read existing lines (up to 7 latest days), update or append, and rewrite cleanly
+    uint32_t days[8] = {0};
+    uint32_t vals[8] = {0};
+    int cnt = 0;
+
+    FILE *f = fopen(PEDO_SD_LOG_PATH, "r");
+    if (f) {
+        char line[48];
+        while (fgets(line, sizeof(line), f) && cnt < 7) {
+            unsigned long d = 0, s = 0;
+            if (sscanf(line, "%lu:%lu", &d, &s) == 2 && d >= 20240101 && d != day_ymd) {
+                days[cnt] = (uint32_t)d;
+                vals[cnt] = (uint32_t)s;
+                cnt++;
+            }
+        }
+        fclose(f);
+    }
+
+    if (cnt >= 7) {
+        for (int i = 0; i < 6; i++) {
+            days[i] = days[i + 1];
+            vals[i] = vals[i + 1];
+        }
+        cnt = 6;
+    }
+    days[cnt] = day_ymd;
+    vals[cnt] = steps;
+    cnt++;
+
+    f = fopen(PEDO_SD_LOG_PATH, "w");
+    if (f) {
+        for (int i = 0; i < cnt; i++) {
+            fprintf(f, "%lu:%lu\n", (unsigned long)days[i], (unsigned long)vals[i]);
+        }
+        fclose(f);
+        ESP_LOGI(TAG, "Archived day %lu (%lu steps) to %s", (unsigned long)day_ymd, (unsigned long)steps, PEDO_SD_LOG_PATH);
+    }
+}
+
 static void pedometer_persist_to_nvs(uint32_t steps, uint32_t day_ymd, bool force)
 {
     if (!force && steps == s_last_saved_steps && (day_ymd == 0 || day_ymd == s_saved_day)) {
@@ -69,6 +119,10 @@ static void pedometer_persist_to_nvs(uint32_t steps, uint32_t day_ymd, bool forc
     nvs_set_u32(h, PEDO_KEY_STEPS, steps);
     if (day_ymd > 0) {
         nvs_set_u32(h, PEDO_KEY_DAY, day_ymd);
+    }
+    if (s_prev_day_ymd > 0) {
+        nvs_set_u32(h, PEDO_KEY_YDAY, s_prev_day_ymd);
+        nvs_set_u32(h, PEDO_KEY_YSTEPS, s_prev_day_steps);
     }
     err = nvs_commit(h);
     nvs_close(h);
@@ -85,19 +139,28 @@ static void pedometer_load_from_nvs(void)
     uint32_t today = pedometer_get_today_ymd();
     uint32_t loaded_steps = 0;
     uint32_t loaded_day = 0;
+    uint32_t loaded_ysteps = 0;
+    uint32_t loaded_yday = 0;
 
     nvs_handle_t h = 0;
     if (nvs_open(PEDO_NVS_NS, NVS_READONLY, &h) == ESP_OK) {
         (void)nvs_get_u32(h, PEDO_KEY_STEPS, &loaded_steps);
         (void)nvs_get_u32(h, PEDO_KEY_DAY, &loaded_day);
+        (void)nvs_get_u32(h, PEDO_KEY_YSTEPS, &loaded_ysteps);
+        (void)nvs_get_u32(h, PEDO_KEY_YDAY, &loaded_yday);
         nvs_close(h);
     }
+    s_prev_day_steps = loaded_ysteps;
+    s_prev_day_ymd = loaded_yday;
 
     // Only auto-reset when calendar strictly moves FORWARD (new day / midnight passed).
     // Never wipe steps if RTC temporarily lost power and fell back to an older date before SNTP sync!
     if (today > 0 && loaded_day > 0 && today > loaded_day) {
-        ESP_LOGI(TAG, "New calendar day (%lu -> %lu): resetting daily steps (prev=%lu)",
+        ESP_LOGI(TAG, "New calendar day (%lu -> %lu): archiving prev=%lu and resetting daily steps",
                  (unsigned long)loaded_day, (unsigned long)today, (unsigned long)loaded_steps);
+        s_prev_day_ymd = loaded_day;
+        s_prev_day_steps = loaded_steps;
+        pedometer_archive_day_to_sd(loaded_day, loaded_steps);
         step_count = 0;
         s_last_saved_steps = 0;
         s_saved_day = today;
@@ -110,8 +173,9 @@ static void pedometer_load_from_nvs(void)
         if (today > 0 && loaded_day == 0) {
             pedometer_persist_to_nvs(step_count, today, true);
         }
-        ESP_LOGI(TAG, "Restored persistent steps=%lu (saved_day=%lu, today=%lu)",
-                 (unsigned long)step_count, (unsigned long)s_saved_day, (unsigned long)today);
+        ESP_LOGI(TAG, "Restored persistent steps=%lu (saved_day=%lu, today=%lu, prev=%lu@%lu)",
+                 (unsigned long)step_count, (unsigned long)s_saved_day, (unsigned long)today,
+                 (unsigned long)s_prev_day_steps, (unsigned long)s_prev_day_ymd);
     }
 }
 
@@ -120,6 +184,45 @@ void pedometer_save_now(void)
     uint32_t today = pedometer_get_today_ymd();
     uint32_t day_to_save = (today > s_saved_day) ? today : s_saved_day;
     pedometer_persist_to_nvs(step_count, day_to_save, false);
+}
+
+void pedometer_format_recent_history(char* out, size_t max_len)
+{
+    if (!out || max_len == 0) return;
+    out[0] = '\0';
+
+    // Try SD 7-day log first; fall back to NVS yesterday record if SD unavailable/empty
+    FILE *f = fopen(PEDO_SD_LOG_PATH, "r");
+    if (f) {
+        char line[48];
+        size_t pos = 0;
+        int n = 0;
+        while (fgets(line, sizeof(line), f)) {
+            unsigned long d = 0, s = 0;
+            if (sscanf(line, "%lu:%lu", &d, &s) == 2 && d >= 20240101) {
+                int mo = (int)((d / 100) % 100);
+                int dy = (int)(d % 100);
+                int w = snprintf(out + pos, max_len - pos, "%s%02d.%02d=%lu",
+                                 (n == 0) ? ", GecmisAdim(" : " ", dy, mo, s);
+                if (w > 0 && pos + (size_t)w + 2 < max_len) {
+                    pos += (size_t)w;
+                    n++;
+                }
+            }
+        }
+        fclose(f);
+        if (n > 0 && pos + 2 < max_len) {
+            out[pos++] = ')';
+            out[pos] = '\0';
+            return;
+        }
+    }
+
+    if (s_prev_day_ymd >= 20240101) {
+        int mo = (int)((s_prev_day_ymd / 100) % 100);
+        int dy = (int)(s_prev_day_ymd % 100);
+        snprintf(out, max_len, ", OncekiGun(%02d.%02d=%lu)", dy, mo, (unsigned long)s_prev_day_steps);
+    }
 }
 
 void pedometer_set_low_power(bool enable)
@@ -151,10 +254,8 @@ static void pedometer_task(void *pvParameter)
             if (s_acc_cb) {
                 s_acc_cb(&acc);
             }
-            // Calculate vector magnitude
             float mag = sqrtf((acc.x * acc.x) + (acc.y * acc.y) + (acc.z * acc.z));
 
-            // Motion-adaptive delay when screen is off (low power mode)
             if (s_is_low_power) {
                 float delta_mag = fabsf(mag - prev_mag);
                 if (delta_mag < 0.05f) {
@@ -164,9 +265,8 @@ static void pedometer_task(void *pvParameter)
                 }
                 prev_mag = mag;
 
-                // If stationary for > 1 sec (~10 ticks at 100ms), relax polling to 400ms
                 if (still_ticks >= 10) {
-                    s_pedometer_delay_ms = 400; // Power saving when stationary
+                    s_pedometer_delay_ms = 400;
                 } else {
                     s_pedometer_delay_ms = 100;
                 }
@@ -175,14 +275,10 @@ static void pedometer_task(void *pvParameter)
                 s_pedometer_delay_ms = 100;
             }
 
-            // Low pass filter to smooth out noise
             filtered_mag = (alpha * mag) + ((1.0f - alpha) * filtered_mag);
 
-            // Peak detection
             if (filtered_mag > PEAK_THRESHOLD) {
                 TickType_t current_time = xTaskGetTickCount();
-
-                // Check cooldown to prevent double counting
                 if ((current_time - last_step_time) * portTICK_PERIOD_MS > COOLDOWN_MS) {
                     step_count++;
                     last_step_time = current_time;
@@ -208,8 +304,11 @@ static void pedometer_task(void *pvParameter)
             last_day_check_us = now_us;
             uint32_t today = pedometer_get_today_ymd();
             if (today > 0 && s_saved_day > 0 && today > s_saved_day) {
-                ESP_LOGI(TAG, "Midnight rollover (%lu -> %lu): resetting daily steps (prev=%lu)",
+                ESP_LOGI(TAG, "Midnight rollover (%lu -> %lu): archiving prev=%lu and resetting daily steps",
                          (unsigned long)s_saved_day, (unsigned long)today, (unsigned long)step_count);
+                s_prev_day_ymd = s_saved_day;
+                s_prev_day_steps = step_count;
+                pedometer_archive_day_to_sd(s_saved_day, step_count);
                 step_count = 0;
                 s_saved_day = today;
                 pedometer_persist_to_nvs(0, today, true);
@@ -224,7 +323,6 @@ static void pedometer_task(void *pvParameter)
 
 esp_err_t pedometer_task_init(void)
 {
-    // Restore today's persistent step count from NVS before starting the sensor task
     pedometer_load_from_nvs();
 
     BaseType_t ret = xTaskCreatePinnedToCore(
@@ -232,9 +330,9 @@ esp_err_t pedometer_task_init(void)
         "pedometer_task",
         4096,
         NULL,
-        2, // Priority 2 (strictly below LVGL=4, BLE=4, TARS=4 so IMU never preempts I2C touch/audio!)
+        2,
         NULL,
-        1  // Run on Core 1 (App Core) to not block Wi-Fi/BLE
+        1
     );
 
     if (ret != pdPASS) {
